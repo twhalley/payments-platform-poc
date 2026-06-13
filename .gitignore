@@ -1,0 +1,31 @@
+# terraform — state can contain plaintext secrets; never commit
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!example.tfvars
+crash.log
+
+# kubernetes — cluster credentials
+kubeconfig
+*.kubeconfig
+.kube/
+
+# helm — local chart deps pulled at build time
+charts/**/charts/
+*.tgz
+
+# secrets / signing
+.vault_pass
+*.vault_pass
+*.pem
+*.key
+
+# scan / sbom artefacts (not source)
+trivy-report.*
+*.sbom.json
+.snyk-result.json
+
+__pycache__/
+*.pyc
+node_modules/
