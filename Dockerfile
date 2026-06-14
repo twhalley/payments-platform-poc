@@ -2,6 +2,14 @@
 # The base image already runs as UID 101 (non-root) and listens on 8080.
 FROM nginxinc/nginx-unprivileged:1.27-alpine
 
+# Upgrade all OS packages to pick up latest Alpine security patches.
+# Fixes CVE-2026-40200 (musl), CVE-2026-22184 (zlib),
+# CVE-2026-27135 (nghttp2), CVE-2026-6732 (libxml2).
+# Must run as root, then drop back to the unprivileged nginx UID.
+USER root
+RUN apk upgrade --no-cache
+USER 101
+
 # Copy our custom landing page
 COPY k8s/base/configmap.yaml /tmp/configmap.yaml
 
