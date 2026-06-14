@@ -2,7 +2,7 @@ name: DAST — OWASP ZAP
 
 # Runs on every push to master and weekly.
 # Starts nginx in a Docker container, runs ZAP baseline scan against it.
-# ZAP uploads the HTML + JSON reports as a CI artifact automatically.
+# Findings are uploaded to the GitHub Security tab (SARIF) AND as a CI artifact.
 #
 # fail_action: false — findings are reported as warnings, not build failures.
 # In a production pipeline set to true to gate on findings.
@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: read
+  security-events: write   # upload ZAP SARIF to GitHub Security tab
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -45,6 +46,63 @@ jobs:
           target: "http://localhost:8080"
           rules_file_name: ".zap/rules.tsv"
           fail_action: false          # report findings; don't fail the build in PoC
-          allow_issue_writing: false  # findings go to the Actions artifact, not GitHub issues
-          # ZAP uploads HTML + JSON reports as a 'zap_scan' artifact automatically.
-          # View results: Actions tab → this run → Artifacts → zap_scan
+          allow_issue_writing: false  # findings go to Security tab + artifact, not GitHub issues
+          # Generates report_html.html, report_json.json, report_xml.xml in workspace
+
+      - name: Convert ZAP JSON report to SARIF
+        if: always()
+        run: |
+          python3 - <<'EOF'
+          import json, sys, os
+
+          def risk_to_level(risk):
+              # ZAP risk codes: 0=Info, 1=Low, 2=Medium, 3=High
+              return {0: "note", 1: "note", 2: "warning", 3: "error"}.get(int(risk), "warning")
+
+          report_path = "report_json.json"
+          if not os.path.exists(report_path):
+              print("::warning::ZAP JSON report not found — skipping SARIF conversion")
+              with open("zap.sarif", "w") as f:
+                  json.dump({"version": "2.1.0", "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json", "runs": []}, f)
+              sys.exit(0)
+
+          with open(report_path) as f:
+              zap = json.load(f)
+
+          rules, results, seen = [], [], set()
+          for site in zap.get("site", []):
+              for alert in site.get("alerts", []):
+                  rid = alert["pluginid"]
+                  if rid not in seen:
+                      seen.add(rid)
+                      rules.append({
+                          "id": rid,
+                          "name": alert["name"],
+                          "shortDescription": {"text": alert["alert"]},
+                          "helpUri": f"https://www.zaproxy.org/docs/alerts/{rid}/",
+                          "properties": {"security-severity": str(round(int(alert["riskcode"]) * 10 / 3, 1))}
+                      })
+                  for inst in alert.get("instances", []):
+                      results.append({
+                          "ruleId": rid,
+                          "level": risk_to_level(alert["riskcode"]),
+                          "message": {"text": f"{alert['desc'].strip()}\n\nEvidence: {inst.get('evidence','')}\nSolution: {alert.get('solution','').strip()}"},
+                          "locations": [{"physicalLocation": {"artifactLocation": {"uri": inst.get("uri", site.get("@name", ""))}}}]
+                      })
+
+          sarif = {
+              "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+              "version": "2.1.0",
+              "runs": [{"tool": {"driver": {"name": "OWASP ZAP", "informationUri": "https://www.zaproxy.org/", "rules": rules}}, "results": results}]
+          }
+          with open("zap.sarif", "w") as f:
+              json.dump(sarif, f, indent=2)
+          print(f"Converted {len(results)} ZAP finding instances ({len(rules)} unique rules) to SARIF")
+          EOF
+
+      - name: Upload ZAP SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e  # v4.36.2
+        if: always()
+        with:
+          sarif_file: zap.sarif
+          category: zap-baseline
