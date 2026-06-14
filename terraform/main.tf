@@ -7,7 +7,7 @@ terraform {
     }
     google-beta = {
       source  = "hashicorp/google-beta"
-      version = "~> 5.0"
+      version = "~> 7.36"
     }
   }
   # In production: use remote state (GCS) so the team shares a single source of truth.
