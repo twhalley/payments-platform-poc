@@ -320,8 +320,8 @@ A full audit was run against this project. Summary of findings and resolutions:
 
 | Finding | Fix |
 |---|---|
-| `snyk/actions/iac@master` — mutable ref | Pinned to `@1.1.2` |
-| `trivy-action@master` — mutable ref | Pinned to `@0.24.0` |
+| `snyk/actions/iac@master` — mutable ref | Pinned to commit SHA `9adf32b` (v1.0.0) |
+| `trivy-action@master` — mutable ref | Pinned to commit SHA `ed142fd` (v0.36.0) |
 | `continue-on-error: true` on security scans | Removed — CRITICAL/HIGH now fails the build |
 | `python:3.12-alpine` mutable image tag | Pinned to `3.12.9-alpine3.21` |
 | `aquasec/trivy:latest` in Cloud Build | Pinned to `0.51.0` |
