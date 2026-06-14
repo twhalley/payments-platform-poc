@@ -58,30 +58,7 @@ sudo install -m 0755 /tmp/k6-v2.0.0-linux-amd64/k6 /usr/local/bin/k6
 # sudo rm -f /etc/apt/sources.list.d/k6.list /usr/share/keyrings/k6-archive-keyring.gpg
 ```
 
-### 2. Enable cgroup delegation for rootless Podman
-
-kind needs the `cpu`, `cpuset`, `io`, `memory`, and `pids` cgroup controllers delegated to
-your user. Without this the cluster will hang at "Starting control-plane" and time out.
-
-```bash
-sudo mkdir -p /etc/systemd/system/user@.service.d
-sudo tee /etc/systemd/system/user@.service.d/delegate.conf <<'EOF'
-[Service]
-Delegate=yes
-EOF
-sudo systemctl daemon-reload
-```
-
-**Log out and back in** — delegation only takes effect on a fresh user session.
-
-Verify before continuing:
-```bash
-systemctl --user show-environment | grep -i delegate || \
-  cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers
-# expected output includes: cpuset cpu io memory pids
-```
-
-### 3. Tell kind to use Podman (add to `~/.bashrc` or `~/.zshrc`)
+### 2. Tell kind to use Podman (add to `~/.bashrc` or `~/.zshrc`)
 
 ```bash
 export KIND_EXPERIMENTAL_PROVIDER=podman

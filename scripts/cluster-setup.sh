@@ -5,8 +5,13 @@ set -euo pipefail
 
 export KIND_EXPERIMENTAL_PROVIDER=podman
 
-echo "==> Creating kind cluster..."
-kind create cluster --config kind-config.yaml
+echo "==> Creating kind cluster (rootful Podman — no session restart required)..."
+sudo KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster --config kind-config.yaml
+
+echo "==> Exporting kubeconfig for current user..."
+mkdir -p ~/.kube
+sudo kind get kubeconfig --name payments-poc > ~/.kube/config
+chmod 600 ~/.kube/config
 
 echo "==> Creating namespaces..."
 kubectl create namespace payments-dev  --dry-run=client -o yaml | kubectl apply -f -
