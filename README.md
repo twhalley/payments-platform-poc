@@ -11,7 +11,7 @@ mirroring a GCP/GKE production target.
 |---|---|
 | Container orchestration | Kubernetes (local kind cluster) |
 | App manifests | Kustomize base + dev/prod overlays |
-| Platform packages | Helm (ArgoCD, Prometheus, RabbitMQ, Kyverno, Istio) |
+| Platform packages | Helm (ArgoCD, Prometheus, RabbitMQ, Kyverno, Istio, Falco) |
 | App as Helm chart | `charts/nginx-app/` — authored from scratch |
 | GitOps delivery | ArgoCD (pull-based, prune + self-heal) |
 | CI/CD pipeline | GitHub Actions (build → scan → sign → GitOps bump) |
@@ -23,17 +23,34 @@ mirroring a GCP/GKE production target.
 | Autoscaling | HPA — CPU spike demo with k6 load test |
 | Observability | Prometheus + Grafana (kube-prometheus-stack) |
 | Service mesh / mTLS | Istio PeerAuthentication (STRICT) + AuthorizationPolicy |
-| Policy admission | Kyverno (non-root, limits, no-privileged, verify-images) |
-| Network segmentation | NetworkPolicy default-deny; VPC + subnets in Terraform |
+| Policy admission | Kyverno + Pod Security Standards (two independent gates) |
+| Runtime security | Falco — syscall-level threat detection |
+| Network segmentation | NetworkPolicy default-deny + explicit allow; VPC in Terraform |
 | Secrets | K8s Secrets + Workload Identity + Cloud KMS (Terraform) |
 | Cloud IaC | Terraform: GKE, VPC, Cloud Armor WAF, KMS, Binary Authorization |
 | Async payments flow | RabbitMQ (StatefulSet, PDB) + producer/consumer CronJob |
 | Local dev loop | Tiltfile — watch-and-sync on manifest change |
 | PCI-DSS mapping | `docs/pci-dss-mapping.md` |
 
-## Prerequisites
+---
 
-Run once on a fresh Debian/Ubuntu machine before anything else.
+## Run anywhere — GitHub Codespaces
+
+The fastest way to run this on any machine is GitHub Codespaces. No local installs needed.
+
+1. Open the repo on GitHub
+2. Click **Code → Codespaces → Create codespace on master**
+3. Wait ~2 minutes for the DevContainer to build (installs kind, k6, cosign, syft automatically)
+4. In the Codespaces terminal: `make cluster`
+
+Port forwards (8080, 3000, 8443, 15672) are auto-configured in `.devcontainer/devcontainer.json`.
+
+> *"I set up a DevContainer so any engineer on the team can clone this and have the full
+> stack running in a Codespace in under 5 minutes — no 'works on my machine' problems."*
+
+---
+
+## Local prerequisites (Debian/Ubuntu — skip if using Codespaces)
 
 ### 1. Install tools
 
@@ -45,12 +62,11 @@ sudo install -m 0755 kubectl /usr/local/bin/kubectl && rm kubectl
 # helm
 curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
-# kind (check https://github.com/kubernetes-sigs/kind/releases for latest)
+# kind
 curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64
 sudo install -m 0755 kind /usr/local/bin/kind && rm kind
 
-# k6 (load testing — used in the HPA autoscaling demo)
-# Binary install — the k6 apt repo GPG key is broken on Debian bookworm
+# k6 — binary install (apt repo GPG key is broken on Debian bookworm)
 curl -Lo /tmp/k6.tar.gz https://github.com/grafana/k6/releases/download/v2.0.0/k6-v2.0.0-linux-amd64.tar.gz
 tar -xzf /tmp/k6.tar.gz -C /tmp
 sudo install -m 0755 /tmp/k6-v2.0.0-linux-amd64/k6 /usr/local/bin/k6
@@ -58,24 +74,19 @@ sudo install -m 0755 /tmp/k6-v2.0.0-linux-amd64/k6 /usr/local/bin/k6
 # sudo rm -f /etc/apt/sources.list.d/k6.list /usr/share/keyrings/k6-archive-keyring.gpg
 ```
 
-### 2. Rootful Podman for kind — a note on the tradeoff
+### 2. Rootful Podman for kind — tradeoff
 
-The setup script creates the kind cluster using `sudo kind` (rootful Podman). This is a
-deliberate PoC simplification: rootless Podman requires systemd cgroup delegation
-(`Delegate=yes`) to take effect on a fresh login session, which adds friction to a demo.
+The setup script uses `sudo kind` (rootful Podman). Rootless Podman requires `Delegate=yes`
+in systemd and a full session restart, which adds friction to a demo.
 
-**Why rootful is fine here:** this is a local, single-user demo machine with no sensitive
-workloads. The security boundary that matters for this PoC is inside the cluster — the
-Kyverno policies, NetworkPolicies, securityContext hardening, and Istio mTLS — not the
-container runtime on the host.
+**Why rootful is fine here:** the security boundary that matters is inside the cluster —
+Kyverno, NetworkPolicies, Istio mTLS — not the container runtime on the host.
 
-**What you'd do in production:** on GKE this is a non-issue — the managed control plane
-handles cgroup delegation transparently and nodes run containerd, not Podman. On a
-self-managed or on-prem cluster you'd configure rootless with `Delegate=yes` and a full
-session restart, which is the correct hardening posture (a compromised rootful container
-has root on the host; a rootless one does not).
+**In production:** GKE handles cgroup delegation transparently (managed control plane,
+containerd not Podman). On self-managed clusters you'd configure rootless with `Delegate=yes`.
+A compromised rootful container has root on the host; a rootless one does not.
 
-### 3. Tell kind to use Podman (add to `~/.bashrc` or `~/.zshrc`)
+### 3. Set Podman provider (add to `~/.bashrc` or `~/.zshrc`)
 
 ```bash
 export KIND_EXPERIMENTAL_PROVIDER=podman
@@ -83,9 +94,84 @@ export KIND_EXPERIMENTAL_PROVIDER=podman
 
 ---
 
+## GitHub Actions — enabling the CI pipeline
+
+The workflows in `.github/workflows/` are already written. To make them run:
+
+1. **Add `SNYK_TOKEN` secret** — GitHub repo → Settings → Secrets and variables → Actions → New repository secret
+   - Get a free token at [snyk.io](https://snyk.io) → Account Settings → API Token
+
+2. **Enable GHCR** — the `GITHUB_TOKEN` already has `packages: write` in the workflow, so image pushes work automatically on push to `master`
+
+3. **Enable CodeQL** — GitHub repo → Security → Code scanning → Set up → Advanced (uses the existing workflow)
+
+4. **Trigger the pipeline** — push any commit to `master` or open a PR. Watch the pipeline at:
+   GitHub repo → Actions tab
+
+**What runs on every PR:**
+- Kustomize + Helm lint
+- Snyk IaC scan → results in Security tab
+- CodeQL static analysis → inline PR annotations
+- Trivy image scan → fails the build on CRITICAL/HIGH CVEs
+
+**What runs on merge to master:**
+- All of the above, plus:
+- cosign keyless image signing (no keys to manage — uses GitHub OIDC)
+- syft SBOM generation + attached as image attestation
+- SLSA provenance attestation
+- Kustomize overlay image-tag bump → ArgoCD picks it up automatically
+
+> *"The pipeline is pinned — `snyk/actions/iac@1.1.2`, `trivy-action@0.24.0` — not `@master`.
+> Mutable action refs are a supply chain attack vector: the action could change between
+> runs. Pinning to a version means what ran yesterday runs the same way today."*
+
+---
+
+## Security audit — what was found and fixed
+
+A full audit was run against this project. Summary of findings and resolutions:
+
+### Fixed (Critical)
+
+| Finding | Fix |
+|---|---|
+| `snyk/actions/iac@master` — mutable ref | Pinned to `@1.1.2` |
+| `trivy-action@master` — mutable ref | Pinned to `@0.24.0` |
+| `continue-on-error: true` on security scans | Removed — CRITICAL/HIGH now fails the build |
+| `python:3.12-alpine` mutable image tag | Pinned to `3.12.9-alpine3.21` |
+| `aquasec/trivy:latest` in Cloud Build | Pinned to `0.51.0` |
+| Consumer `readOnlyRootFilesystem: false` | Fixed to `true` + `emptyDir` for `/tmp` |
+| Grafana password committed to values file | Removed — passed via `--set` at install time only |
+
+### Fixed (High)
+
+| Finding | Fix |
+|---|---|
+| NetworkPolicy ingress had no `from:` clause | Restricted to `ingress-nginx` + `istio-system` namespaces |
+| No `imagePullPolicy` on base deployment | Added `IfNotPresent` explicitly |
+| No PodDisruptionBudget for nginx | Added `k8s/base/pdb.yaml` (`minAvailable: 1`) |
+| No NetworkPolicy for RabbitMQ egress | Added `k8s/rabbitmq/networkpolicy.yaml` (port 5672 only) |
+| Prometheus retention 7 days | Increased to 30 days (PCI-DSS audit trail) |
+
+### Accepted trade-offs (Medium/Low — documented, not production blockers)
+
+| Finding | Status |
+|---|---|
+| Kyverno policies scoped to specific namespaces only | Acceptable for PoC; production would scope cluster-wide |
+| Terraform API endpoint `enable_private_endpoint: false` | Documented — needed for demo access; production would use bastion |
+| KMS rotation at 90 days | Within PCI-DSS tolerance; 30 days is stricter but optional |
+| RabbitMQ default permissions `.*` | Acceptable for PoC; production would scope per queue family |
+| ArgoCD TLS disabled (`--insecure`) | Local only; production terminates TLS at ingress/mesh layer |
+
+---
+
 ## Demo walkthrough
 
-Run `bash scripts/cluster-setup.sh` first, then step through each section below in order.
+Use `make` targets — each maps to one demo step.
+
+```bash
+make cluster    # start here — boots the cluster and deploys nginx both ways
+```
 
 ---
 
@@ -97,80 +183,97 @@ kubectl get pods -n payments-dev
 kubectl get pods -n payments-helm
 ```
 
-Two nodes (control-plane + worker). nginx is running in two namespaces — deployed two
-different ways — which leads into the next step.
+Two nodes (control-plane + worker). nginx is running in two namespaces, deployed two ways.
 
-> *"I'm running on a local kind cluster, two nodes, which directly mirrors GKE. The role
-> values local dev environments — this is the full stack on one machine."*
+> *"Local kind cluster, two nodes — directly mirrors a GKE setup. The role values local dev
+> environments; this is the full stack on one machine with no cloud spend."*
 
 ---
 
 ### 2. Kustomize vs Helm — two delivery paths
 
-**Show Kustomize:**
 ```bash
-kubectl kustomize k8s/overlays/dev   # render the dev overlay without applying
+kubectl kustomize k8s/overlays/dev   # render the overlay without applying
 kubectl get deployment -n payments-dev dev-nginx-app -o yaml
 ```
 
-Open `k8s/base/deployment.yaml` and walk through the hardening fields:
-- `runAsNonRoot: true` + `runAsUser: 101` — uses `nginx-unprivileged` image, not the root-default `nginx`
-- `readOnlyRootFilesystem: true` — three `emptyDir` mounts for the paths nginx needs to write
+Open `k8s/base/deployment.yaml` and walk through:
+- `runAsNonRoot: true` + `runAsUser: 101` — `nginx-unprivileged` image, not root-default `nginx`
+- `readOnlyRootFilesystem: true` — three `emptyDir` mounts for paths nginx needs to write
 - `allowPrivilegeEscalation: false` + `capabilities: drop: ALL`
-- `resources.requests.cpu: 25m` — intentionally low so the HPA triggers fast in the demo
-- All three probe types: `readinessProbe`, `livenessProbe`, `startupProbe`
+- `seccompProfile: RuntimeDefault` — kernel syscall filtering
+- `resources.requests.cpu: 25m` — intentionally low so HPA fires fast in the demo
+- All three probes: `readinessProbe`, `livenessProbe`, `startupProbe`
+- `minAvailable: 1` PodDisruptionBudget — service survives a node drain
 
-**Show Helm:**
 ```bash
 helm list -n payments-helm
-helm get values nginx-app -n payments-helm
-helm history nginx-app -n payments-helm
+helm history nginx-app -n payments-helm    # show versioned release history
 ```
 
-Open `charts/nginx-app/` — authored from scratch, not `helm create`.
+Open `charts/nginx-app/` — `Chart.yaml`, `values.yaml`, `templates/_helpers.tpl` — authored
+from scratch.
 
-> *"Kustomize for our own services: patch-based, no templating, diff-friendly, and ArgoCD
-> renders it natively. Helm for platform components with versioned releases and `helm
-> rollback`. Same workload, both paths running side by side."*
+> *"Kustomize for our own services: patch-based, no templating, diff-friendly, ArgoCD renders
+> it natively. Helm for platform components with versioned releases and `helm rollback`. I can
+> show both delivery paths running side-by-side, and I authored this chart rather than just
+> consuming one."*
 
 ---
 
 ### 3. HPA autoscaling — watch pods spawn under load
 
-Open **two terminals**.
+This is the most visual demo moment. Open **two terminals**.
 
-**Terminal 1** — watch in real time:
+**Terminal 1 — watch the HPA and pods in real time:**
 ```bash
-kubectl get hpa,pods -n payments-dev -w
+make watch
+# or: kubectl get hpa,pods -n payments-dev -w
 ```
 
-**Terminal 2** — port-forward then fire the load test:
-```bash
-kubectl port-forward -n payments-dev svc/dev-nginx-app 8080:80 &
-k6 run -e TARGET_URL=http://localhost:8080 scripts/load-test.js
+What you will see:
+```
+NAME                             REFERENCE              TARGETS   MINPODS   MAXPODS   REPLICAS
+horizontalpodautoscaler/dev-nginx-app   Deployment/dev-nginx-app   5%/50%    2         6         3
+
+NAME                            READY   STATUS    RESTARTS
+pod/dev-nginx-app-xxx-aaa       1/1     Running   0
+pod/dev-nginx-app-xxx-bbb       1/1     Running   0
+pod/dev-nginx-app-xxx-ccc       1/1     Running   0
 ```
 
-The HPA (`k8s/base/hpa.yaml`) triggers at 50% of the `25m` CPU request. Watch replicas
-climb from 3 toward 6. After load stops, pods scale back down after the 60s stabilisation
-window.
+**Terminal 2 — fire the load test:**
+```bash
+make load-test
+# or: kubectl port-forward -n payments-dev svc/dev-nginx-app 8080:80 &
+#     k6 run -e TARGET_URL=http://localhost:8080 scripts/load-test.js
+```
 
-> *"CPU request is deliberately low so the HPA fires quickly under demo load. The
-> scale-up stabilisation window is 15 seconds; scale-down is 60 to prevent flapping.
-> In production you'd tune both to your actual baseline."*
+k6 ramps: **20 VUs → 100 VUs → 200 VUs → 0**. Watch Terminal 1 as this happens:
+
+1. CPU% column climbs past 50% (the HPA threshold)
+2. `REPLICAS` jumps: `3 → 5 → 6` within ~15 seconds (the scale-up stabilisation window)
+3. New pods appear as `Pending → ContainerCreating → Running`
+4. After load stops, replicas drain back to 3 after the 60s scale-down window
+
+k6 output shows:
+```
+✓ status 200
+✓ body contains payments
+http_req_duration p(95)=<500ms
+```
+
+> *"CPU request is deliberately low at 25 millicores so the HPA fires quickly under demo load.
+> Scale-up stabilisation is 15 seconds to respond fast; scale-down is 60 seconds to prevent
+> flapping. The PodDisruptionBudget means at least one pod stays up during any node drain —
+> you can't accidentally take the service fully offline."*
 
 ---
 
 ### 4. ArgoCD — GitOps pull-based delivery
 
 ```bash
-helm repo add argo https://argoproj.github.io/argo-helm --force-update
-helm upgrade --install argocd argo/argo-cd \
-  --namespace argocd \
-  --values argocd/values-argocd.yaml \
-  --wait
-
-kubectl apply -f argocd/application.yaml
-
+make argocd
 kubectl port-forward -n argocd svc/argocd-server 8443:443
 ```
 
@@ -178,217 +281,263 @@ Open `https://localhost:8443`. Show the app in sync, then open `argocd/applicati
 - `automated.prune: true` — removes resources deleted from git
 - `automated.selfHeal: true` — reverts manual `kubectl edit` changes automatically
 
-> *"Pull-based GitOps — ArgoCD polls the repo, not the other way around. `selfHeal` means
-> if someone makes a manual change at 2am, ArgoCD reverts it within 3 minutes. Every
-> change is a signed Git commit — that's your audit trail for PCI-DSS Requirement 12."*
+**Live demo:** make a small change in the dev overlay (e.g. bump replicas), commit and push,
+and watch ArgoCD detect drift and reconcile within 3 minutes without any manual `kubectl apply`.
+
+> *"Pull-based GitOps — ArgoCD polls the repo, not the other way around. `selfHeal` means if
+> someone makes a manual kubectl change at 2am, ArgoCD reverts it on the next sync. Every
+> change to this cluster is a signed Git commit — that's the audit trail for PCI-DSS Req 12."*
 
 ---
 
 ### 5. GitHub Actions CI pipeline
 
-Open `.github/workflows/ci.yaml` on GitHub and walk through the five jobs:
+Open `.github/workflows/ci.yaml` on GitHub and walk through the jobs:
 
 1. **lint** — Kustomize dry-run + `helm lint` before anything builds
-2. **snyk** — AI-powered IaC scan (Terraform + K8s manifests), results in GitHub Security tab
-3. **codeql** — GitHub's AI static analysis; raises inline fix suggestions on PR diffs
-4. **build-scan** — builds the image, then Trivy scans for CVEs/secrets/misconfigs; exits 1 on CRITICAL/HIGH
+2. **snyk** — AI-powered IaC scan; results appear in the GitHub Security tab
+3. **codeql** — GitHub AI static analysis with Copilot Autofix suggestions on PR diffs
+4. **build-scan** — builds the image, Trivy scans for CVEs/secrets/misconfigs, exits 1 on CRITICAL/HIGH
 5. **sign** — cosign keyless signing via GitHub OIDC + syft SBOM attached as attestation
 6. **deploy** — bumps the image tag in the Kustomize overlay; ArgoCD picks it up automatically
 
-> *"Two AI scanners in parallel — Snyk's DeepCode engine for IaC and containers, CodeQL
-> with Copilot Autofix for static analysis. Running both means I'm not trusting a single
-> vendor. The developer sees the issue before it merges — that's shift-left."*
+Point at the pinned action versions:
+```yaml
+uses: snyk/actions/iac@1.1.2         # not @master
+uses: aquasecurity/trivy-action@0.24.0  # not @master
+```
+
+> *"Two AI scanners in parallel — Snyk's DeepCode engine and CodeQL with Copilot Autofix.
+> Running both means I'm not trusting a single vendor. Actions are pinned to specific versions,
+> not @master — a mutable ref is a supply chain attack vector. The developer sees the issue
+> in the PR before it merges — that's what shift-left means in practice."*
 
 ---
 
 ### 6. Prometheus + Grafana — observability
 
 ```bash
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update
-helm upgrade --install kube-prometheus-stack \
-  prometheus-community/kube-prometheus-stack \
-  --namespace monitoring --create-namespace \
-  --values monitoring/values-kube-prometheus-stack.yaml \
-  --set grafana.adminPassword=poc-admin \
-  --wait
-
+make prometheus
 kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
 ```
 
-Open `http://localhost:3000` — admin / poc-admin. Navigate to the Kubernetes HPA
-dashboard (ID 10257) to see the scale event from step 3.
+Open `http://localhost:3000` — admin / poc-admin.
 
-> *"Observability is how you know about a problem before your customers do. Any pod
-> annotated `prometheus.io/scrape: true` is picked up automatically — no per-service
-> config needed."*
+Navigate to **Dashboards → Kubernetes HPA** (imported automatically, ID 10257). If you ran
+the load test in step 3, you'll see the replica count spike and the CPU metric that triggered it.
+
+> *"Observability is how you know about a problem before your customers do. Any pod annotated
+> `prometheus.io/scrape: true` is picked up automatically. The Grafana dashboard lets on-call
+> see the HPA scale event, CPU utilisation, and request latency in one view."*
 
 ---
 
 ### 7. RabbitMQ — async payment event flow
 
 ```bash
-helm repo add bitnami https://charts.bitnami.com/bitnami --force-update
-helm upgrade --install rabbitmq bitnami/rabbitmq \
-  --namespace payments-dev \
-  --values k8s/rabbitmq/values-rabbitmq.yaml \
-  --wait
-
-kubectl create secret generic rabbitmq-url \
-  --namespace payments-dev \
-  --from-literal=url="amqp://payments:poc-change-me@rabbitmq.payments-dev.svc:5672/payments" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-kubectl apply -f k8s/rabbitmq/pdb.yaml
-kubectl apply -f k8s/rabbitmq/consumer-deployment.yaml
-kubectl apply -f k8s/rabbitmq/producer-job.yaml
-
-# Watch payment events flow through the queue
-kubectl logs -n payments-dev -l app.kubernetes.io/name=payment-consumer -f --max-log-requests=3
+make rabbitmq
 ```
 
-Show the management UI:
+Watch events flow:
+```bash
+kubectl logs -n payments-dev -l app.kubernetes.io/name=payment-consumer -f --max-log-requests=3
+# [consumer] Processing a3f2c1d0-... £10.00
+# [consumer] ACKed a3f2c1d0-...
+```
+
+Management UI:
 ```bash
 kubectl port-forward -n payments-dev svc/rabbitmq 15672:15672
 # http://localhost:15672  payments / poc-change-me
 ```
 
-Open `k8s/rabbitmq/pdb.yaml` — `minAvailable: 2` ensures quorum is maintained during
-node drains. Open `k8s/rabbitmq/producer-job.yaml` — `delivery_mode=2` makes messages
-persistent across broker restarts.
+In the UI, show the `payment.authorised` queue filling and draining. Navigate to
+**Queues → payment.authorised** to see message rates, consumers, and the dead-letter
+queue configured for failed deliveries.
 
-> *"Payment orchestration across dozens of processes is inherently async. A broker
-> decouples authorisation, tokenisation, fraud check, and settlement — a slow settlement
-> service doesn't block the others. `delivery_mode=2` means a message survives a broker
-> restart. If the consumer crashes mid-process, the unACKed message re-queues. That's
-> how you avoid losing a payment."*
+Open `k8s/rabbitmq/values-rabbitmq.yaml`:
+- `replicaCount: 3` — quorum; losing 1 node still has a majority
+- `k8s/rabbitmq/pdb.yaml` — `minAvailable: 2` ensures quorum survives a node drain
+
+Open `k8s/rabbitmq/producer-job.yaml`:
+- `delivery_mode=2` — messages survive a broker restart
+- Consumer ACKs only after processing — unACKed messages re-queue on consumer crash
+
+> *"Payment orchestration is inherently async — authorisation, tokenisation, fraud check,
+> settlement, CRM update. A broker decouples them: a slow settlement step doesn't block
+> the others, a traffic spike queues rather than knocking services over, and a consumer
+> crash doesn't lose the payment — the unACKed message re-queues. That's guaranteed
+> delivery, which is non-negotiable for payments."*
 
 ---
 
-### 8. Istio mTLS + Kyverno policy admission
+### 8. Kyverno + Pod Security Standards — two admission gates
 
-**Kyverno:**
 ```bash
-helm repo add kyverno https://kyverno.github.io/kyverno --force-update
-helm upgrade --install kyverno kyverno/kyverno \
-  --namespace kyverno --create-namespace \
-  --wait
-
-kubectl apply -f kyverno/policies/require-non-root.yaml
-kubectl apply -f kyverno/policies/require-resource-limits.yaml
-kubectl apply -f kyverno/policies/block-privileged.yaml
+make kyverno
 ```
 
-Try to deploy a non-compliant pod — watch Kyverno block it:
+**Gate 1 — Kubernetes Pod Security Standards (API server level):**
 ```bash
+kubectl label namespace payments-dev \
+  pod-security.kubernetes.io/audit=restricted \
+  pod-security.kubernetes.io/warn=restricted
+
+# Check for any violations before enforcing:
+kubectl get events -n payments-dev --field-selector reason=FailedCreate
+
+# Once clean, enforce:
+kubectl label namespace payments-dev pod-security.kubernetes.io/enforce=restricted --overwrite
+```
+
+**Gate 2 — Kyverno (admission webhook level):**
+```bash
+# Try to deploy a non-compliant pod — show it being blocked at the webhook:
 kubectl run bad-pod --image=nginx --namespace payments-dev
-# Expected: Error from server: admission webhook denied the request
+# Error from server: admission webhook denied the request:
+# Containers must set runAsNonRoot: true
 ```
 
-Open `kyverno/policies/require-non-root.yaml` and show the `validationFailureAction: Enforce` field.
+Two independent gates: PSS enforces at the API server before the request reaches Kyverno.
+If one is misconfigured, the other still fires.
 
-**Istio mTLS:**
-```bash
-helm repo add istio https://istio-release.storage.googleapis.com/charts --force-update
-helm upgrade --install istio-base istio/base --namespace istio-system --create-namespace --wait
-helm upgrade --install istiod istio/istiod --namespace istio-system --wait
+Open `kyverno/policies/require-non-root.yaml` — `validationFailureAction: Enforce`.
+Open `kyverno/policies/pod-security-standards.yaml` — explains the layered approach.
 
-kubectl apply -f istio/peer-authentication.yaml
-kubectl apply -f istio/authorization-policy.yaml
-```
-
-Open `istio/peer-authentication.yaml` — `mode: STRICT` means all pods in `payments-dev`
-must use mutual TLS. Plaintext is rejected.
-
-> *"Kyverno is the policy admission controller — it intercepts the API server request
-> before a pod is scheduled. Unsigned, root-running, or resource-unlimited containers
-> are rejected at the gate. Istio mTLS covers Requirement 4 of PCI-DSS: all
-> service-to-service traffic is encrypted in transit with mutual certificate auth."*
+> *"Two independent admission gates. PSS is built into the API server — no webhook, no
+> dependency on a running pod. Kyverno runs as an admission webhook and gives you richer
+> policy logic and audit reporting. Together they're defense-in-depth at the scheduling layer."*
 
 ---
 
-### 9. Terraform — GCP/GKE infrastructure as code
+### 9. Istio mTLS
 
 ```bash
-cd terraform
-terraform init
-terraform plan -var-file=../example.tfvars
+make istio
+```
+
+Open `istio/peer-authentication.yaml` — `mode: STRICT` — all pods in `payments-dev` must
+use mutual TLS. Plaintext is rejected at the sidecar proxy.
+
+Open `istio/authorization-policy.yaml` — deny-all, then explicit allow only for:
+- Ingress gateway → nginx on port 8080
+- Prometheus → nginx metrics scrape
+
+> *"Istio mTLS covers PCI-DSS Requirement 4: all service-to-service traffic encrypted in
+> transit with mutual certificate authentication. The authorization policy implements
+> Requirement 7: default-deny, explicit allow only for known service identity pairs.
+> If a pod is compromised and tries to talk to another service, its Istio certificate
+> won't be in the allow list — the request is dropped at the sidecar."*
+
+---
+
+### 10. Falco — runtime threat detection
+
+```bash
+make falco
+```
+
+Watch for runtime alerts:
+```bash
+kubectl logs -n falco -l app.kubernetes.io/name=falco -f
+```
+
+Trigger a detection to show it working:
+```bash
+# Shell into a running pod — Falco detects unexpected terminal shells in containers
+kubectl exec -n payments-dev -it $(kubectl get pod -n payments-dev -l app.kubernetes.io/name=nginx-app -o name | head -1) -- /bin/sh
+```
+
+Falco will log:
+```
+Notice A shell was spawned in a container with an attached terminal
+  (user=root container=nginx-app image=nginx-unprivileged)
+```
+
+> *"Kyverno and PSS prevent bad pods from being scheduled. Falco watches what's happening
+> inside running containers at the syscall level. If an attacker gets into a running pod
+> and spawns a shell, reads /etc/shadow, or starts a network scan — Falco detects it in
+> real time. That's the difference between prevention and detection. You need both."*
+
+---
+
+### 11. Terraform — GCP/GKE infrastructure as code
+
+```bash
+make terraform-plan
 ```
 
 Walk through the plan output and open the files:
-- `gke.tf` — private nodes, Workload Identity, Binary Authorization enforced, Shielded Nodes
-- `vpc.tf` — private subnet with secondary ranges for pods/services; Cloud Armor WAF rule blocking XSS + SQLi
-- `kms.tf` — envelope encryption for etcd and app secrets, 90-day automatic key rotation, `prevent_destroy` lifecycle guard
+- `terraform/gke.tf` — private nodes, Workload Identity, Binary Authorization, Shielded Nodes
+- `terraform/vpc.tf` — private subnet, Cloud Armor WAF blocking XSS + SQLi (OWASP rule set)
+- `terraform/kms.tf` — KMS envelope encryption, 90-day key rotation, `prevent_destroy` guard
 
-> *"This is real Terraform — it would apply against GCP as-is. I'm demonstrating with
-> `terraform plan` rather than spending on live infrastructure. Binary Authorization here
-> is the GCP-native equivalent of the Kyverno verifyImages policy — only attested images
-> run. KMS covers PCI-DSS Requirement 3: protect stored account data."*
-
-```bash
-cd ..
-```
+> *"Real Terraform — would apply against GCP as-is. Demonstrated with `terraform plan` to
+> avoid live cloud spend. Binary Authorization here is the GCP-native equivalent of the
+> Kyverno verifyImages policy: only attested images admitted. KMS + 90-day rotation covers
+> PCI-DSS Requirement 3. The `prevent_destroy` lifecycle guard means a `terraform destroy`
+> cannot accidentally delete live encryption keys."*
 
 ---
 
-### 10. Supply chain integrity — SBOM + signing + admission gate
+### 12. Supply chain integrity — SBOM + signing + admission gate
 
-This is the end-to-end supply chain story. Open `.github/workflows/ci.yaml` and
-`.github/workflows/supply-chain.yaml` together.
+Open `.github/workflows/ci.yaml` and `.github/workflows/supply-chain.yaml` together.
 
 **The chain:**
-1. **syft** generates an SPDX SBOM at build time — answers "do we ship Log4j?" instantly
-2. **cosign keyless** signs the image using the GitHub Actions OIDC token — no long-lived keys
-3. **SLSA provenance** attestation is attached — proves which pipeline workflow built the image
-4. **Kyverno verifyImages** (`kyverno/policies/verify-images.yaml`) verifies the signature at
-   admission time — unsigned images are rejected before they're scheduled
+1. **syft** — generates SPDX SBOM at build time. Answers "do we ship Log4j?" instantly
+2. **cosign keyless** — signs the image using the GitHub Actions OIDC token. No long-lived keys
+3. **SLSA provenance** — attestation proving *which pipeline workflow* built the image
+4. **Kyverno verifyImages** — verifies the signature at admission time; unsigned = rejected
 
-Show what rejection looks like by trying to deploy an unsigned third-party image into the
-`payments-dev` namespace once the verifyImages policy is applied:
 ```bash
 kubectl apply -f kyverno/policies/verify-images.yaml
+
+# Try to deploy an unsigned image into the protected namespace:
 kubectl run unsigned --image=alpine --namespace payments-dev
 # Expected: admission webhook denied — image not signed by your pipeline
 ```
 
-> *"Scanning in CI tells you whether an image has known vulnerabilities. Supply chain
-> integrity answers a completely different question: is the thing running in my cluster
-> actually what I built, or did someone tamper with it between build and deploy?
-> Keyless signing means no keys to rotate or leak — the signature proves it was built
-> by this specific GitHub Actions workflow. The Kyverno gate means that control cannot
-> be bypassed by pushing directly to the registry. This maps directly to GCP Binary
-> Authorization, which is the 'set you apart' bullet in the JD."*
+> *"Scanning tells you whether an image has known vulnerabilities. Supply chain integrity
+> answers a different question: is the thing running in my cluster actually what I built,
+> or did someone tamper with it between build and deploy? Keyless signing uses the pipeline's
+> verified GitHub identity — no keys to rotate or leak. The Kyverno gate runs inside the
+> cluster and can't be bypassed by pushing directly to the registry. This is the open-source
+> equivalent of GCP Binary Authorization — the 'set you apart' bullet in the JD."*
 
 ---
 
-### 11. PCI-DSS audit mapping
+### 13. PCI-DSS audit mapping
 
 ```bash
 cat docs/pci-dss-mapping.md
 ```
 
-Walk down the table — every requirement points to a specific file.
+Walk down the table — every PCI-DSS requirement maps to a specific file.
 
-> *"Audit readiness isn't just having the controls — it's being able to point an auditor
-> at evidence immediately. Signed commits in ArgoCD are the change log, Kyverno policies
-> are the enforcement evidence, KMS rotation is automatic and logged in Cloud Audit Logs."*
+> *"Audit readiness isn't just having the controls — it's pointing an auditor at evidence
+> immediately. Signed Git commits in ArgoCD are the change log, Kyverno policies are the
+> enforcement evidence, KMS rotation is automatic and logged in Cloud Audit Logs."*
+
+---
 
 ## JD mapping
 
 | JD requirement | Where in this repo |
 |---|---|
 | Production Kubernetes (GKE) | `kind-config.yaml`, `terraform/gke.tf` |
-| Terraform for GCP | `terraform/` (plan-validated against GKE) |
+| Terraform for GCP | `terraform/` (plan-validated) |
 | CI/CD — Google Cloud Build + GitHub Actions | `cloudbuild.yaml`, `.github/workflows/` |
-| DNS, TLS/mTLS, load balancing | Istio mTLS (`istio/`), ingress port mappings (`kind-config.yaml`) |
-| Docker / container lifecycle | `Dockerfile`, container fields in `k8s/base/deployment.yaml` |
+| DNS, TLS/mTLS, load balancing | Istio mTLS (`istio/`), ingress port mappings |
+| Docker / container lifecycle | `Dockerfile`, `k8s/base/deployment.yaml` |
 | GitOps — ArgoCD + Kustomize | `argocd/application.yaml`, `k8s/overlays/` |
 | Istio / service mesh | `istio/peer-authentication.yaml`, `istio/authorization-policy.yaml` |
-| PCI-DSS at infrastructure level | `docs/pci-dss-mapping.md`, Kyverno policies, NetworkPolicies, KMS |
-| GCP: KMS, Cloud Armor, Binary Authorization | `terraform/kms.tf`, `terraform/vpc.tf` (Cloud Armor), `terraform/gke.tf` (Binary Auth) |
+| PCI-DSS at infrastructure level | `docs/pci-dss-mapping.md`, Kyverno, NetworkPolicies, KMS |
+| GCP: KMS, Cloud Armor, Binary Authorization | `terraform/kms.tf`, `terraform/vpc.tf`, `terraform/gke.tf` |
 | Local Kubernetes dev tooling (Tilt) | `Tiltfile` |
 | Prometheus + Grafana | `monitoring/values-kube-prometheus-stack.yaml` |
-| Snyk (AI scanning) | `.github/workflows/ci.yaml` — Snyk IaC step |
-| Trivy (multi-scanner) | `.github/workflows/ci.yaml` — Trivy image + fs steps |
+| Snyk AI scanning | `.github/workflows/ci.yaml` — Snyk step |
+| Trivy multi-scanner | `.github/workflows/ci.yaml` — Trivy step |
 | Supply chain / Binary Authorization | `kyverno/policies/verify-images.yaml`, `.github/workflows/supply-chain.yaml` |
 | RabbitMQ async payment flow | `k8s/rabbitmq/` |
 | Helm | `charts/nginx-app/` (authored), platform charts (consumed) |
@@ -398,4 +547,5 @@ Walk down the table — every requirement points to a specific file.
 Runs on a local **kind** cluster by design — the role explicitly values "keeping local
 development environments working so engineers can run the full stack on their machines"
 and names Tilt. Cloud IaC (`terraform/`) is real and `terraform plan`-validated against
-GKE; it is demonstrated without live GCP spend.
+GKE; demonstrated without live cloud spend. Open in GitHub Codespaces to run with zero
+local setup.
