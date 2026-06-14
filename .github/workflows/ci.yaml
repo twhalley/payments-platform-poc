@@ -248,10 +248,22 @@ jobs:
           git commit -m "chore: bump nginx-app to ${{ github.sha }}"
           git push origin "$BUMP_BRANCH"
 
-          # Open PR; silently succeed if one already exists for this SHA
-          gh pr create \
-            --title "GitOps: bump nginx-app to $(echo '${{ github.sha }}' | cut -c1-7)" \
+          # Open PR; succeed if one already exists for this SHA
+          SHORT="${{ github.sha }}"
+          SHORT="${SHORT:0:7}"
+          if gh pr create \
+            --title "GitOps: bump nginx-app to ${SHORT}" \
             --body "Automated image-tag bump triggered by [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})." \
             --head "$BUMP_BRANCH" \
             --base master \
-            --label "gitops" 2>/dev/null || echo "PR already exists for this SHA."
+            --label "gitops"; then
+            echo "PR created."
+          else
+            EXISTING=$(gh pr list --head "$BUMP_BRANCH" --state open --json url --jq '.[0].url')
+            if [ -n "$EXISTING" ]; then
+              echo "PR already open: $EXISTING"
+            else
+              echo "::error::gh pr create failed and no open PR found for $BUMP_BRANCH"
+              exit 1
+            fi
+          fi
