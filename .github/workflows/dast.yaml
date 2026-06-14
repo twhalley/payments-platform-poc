@@ -1,15 +1,14 @@
 name: DAST — OWASP ZAP
 
 # Runs on every push to master and weekly.
-# Starts nginx in a Docker container, runs ZAP baseline scan against it,
-# and uploads results to the GitHub Security tab as SARIF.
+# Starts nginx in a Docker container, runs ZAP baseline scan against it.
+# ZAP uploads the HTML + JSON reports as a CI artifact automatically.
 #
-# This covers the DAST layer (dynamic testing of a running app) that SAST
-# (CodeQL/Snyk) and SCA (Trivy) cannot — open redirects, missing security
-# headers, injection vectors visible only at the HTTP layer.
+# fail_action: false — findings are reported as warnings, not build failures.
+# In a production pipeline set to true to gate on findings.
 #
-# fail_action: false — findings are reported, not build-blocking.
-# In a production pipeline set to true to gate on HIGH/CRITICAL findings.
+# DAST covers what SAST/SCA cannot: runtime HTTP behaviour — missing security
+# headers, open redirects, injection vectors visible only at the HTTP layer.
 on:
   push:
     branches: [master]
@@ -18,7 +17,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write   # upload SARIF to GitHub Security tab
 
 jobs:
   zap-baseline:
@@ -43,13 +41,7 @@ jobs:
         with:
           target: "http://localhost:8080"
           rules_file_name: ".zap/rules.tsv"
-          cmd_options: "-a"
           fail_action: false          # report findings; don't fail the build in PoC
-          allow_issue_writing: false  # don't open GitHub issues — findings go to Security tab
-
-      - name: Upload ZAP SARIF to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@dd903d2e4f5405488e5ef1422510ee31c8b32357  # v3.36.2
-        if: always()
-        with:
-          sarif_file: zap-results.sarif
-          category: owasp-zap-dast
+          allow_issue_writing: false  # findings go to the Actions artifact, not GitHub issues
+          # ZAP uploads HTML + JSON reports as a 'zap_scan' artifact automatically.
+          # View results: Actions tab → this run → Artifacts → zap_scan
