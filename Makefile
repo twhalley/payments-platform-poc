@@ -1,6 +1,6 @@
 .PHONY: cluster destroy load-test watch argocd prometheus loki alert-rules \
         rabbitmq kyverno istio falco terraform-plan security-scan kyverno-test \
-        verify-supply-chain rbac-audit clean help
+        verify-supply-chain rbac-audit secrets clean help
 
 NAMESPACE  := payments-dev
 KUBECONFIG ?= $(HOME)/.kube/config
@@ -29,6 +29,9 @@ help:
 	@echo "  make kyverno-test      Unit-test Kyverno policies without a cluster"
 	@echo "  make rbac-audit        Show what each service account can and cannot do"
 	@echo "  make verify-supply-chain  Verify cosign signature on the latest pushed image"
+	@echo ""
+	@echo "── Secrets management ──────────────────────────────────────────────────────"
+	@echo "  make secrets           Install ESO + OpenBao, seed demo secrets, apply ExternalSecrets"
 
 # ── Phase 1+2: cluster + nginx ────────────────────────────────────────────────
 cluster:
@@ -230,6 +233,69 @@ rbac-audit:
 	kubectl auth can-i patch  deployments -n payments-dev --as system:serviceaccount:argocd:argocd-application-controller
 	kubectl auth can-i delete deployments -n payments-dev --as system:serviceaccount:argocd:argocd-application-controller || true
 	kubectl auth can-i get    secrets     -n payments-dev --as system:serviceaccount:argocd:argocd-application-controller || true
+
+# ── Phase 17: Secrets management ─────────────────────────────────────────────
+# Installs External Secrets Operator + OpenBao (open-source Vault fork) in-cluster,
+# seeds demo secrets, then applies the ExternalSecrets that pull them into K8s Secrets.
+#
+# Local/Codespaces: OpenBao dev mode — in-memory, auto-unseal, root token = "root"
+# Production (GKE): swap secret-store.yaml for gcp-secret-store.yaml (Workload Identity)
+#                   GCP Secret Manager resources provisioned by terraform/secrets.tf
+#
+# After this target, verify with:
+#   kubectl get externalsecret -n payments-dev
+#   kubectl get secret payment-gateway-key db-credentials -n payments-dev
+secrets:
+	@echo "── Installing External Secrets Operator..."
+	helm repo add external-secrets https://charts.external-secrets.io --force-update 2>/dev/null
+	helm upgrade --install external-secrets external-secrets/external-secrets \
+		--namespace external-secrets --create-namespace \
+		--set installCRDs=true \
+		--wait
+
+	@echo ""
+	@echo "── Installing OpenBao (open-source Vault fork)..."
+	helm repo add openbao https://openbao.github.io/openbao-helm --force-update 2>/dev/null
+	helm upgrade --install openbao openbao/openbao \
+		--namespace openbao --create-namespace \
+		--values k8s/secrets/openbao-values.yaml \
+		--wait
+
+	@echo ""
+	@echo "── Storing OpenBao root token in ESO's namespace..."
+	kubectl create namespace payments-dev 2>/dev/null || true
+	kubectl create secret generic openbao-token \
+		--namespace external-secrets \
+		--from-literal=token=root \
+		--dry-run=client -o yaml | kubectl apply -f -
+
+	@echo ""
+	@echo "── Port-forwarding OpenBao for secret seeding..."
+	kubectl port-forward -n openbao svc/openbao 8200:8200 &
+	sleep 3
+
+	@echo ""
+	@echo "── Seeding demo secrets into OpenBao..."
+	OPENBAO_ADDR=http://127.0.0.1:8200 OPENBAO_TOKEN=root bash scripts/seed-secrets.sh
+
+	@echo ""
+	@echo "── Applying ESO ClusterSecretStore and ExternalSecrets..."
+	kubectl apply -f k8s/secrets/secret-store.yaml
+	kubectl apply -f k8s/secrets/external-secret.yaml
+
+	@echo ""
+	@echo "── Waiting for secrets to sync (up to 60s)..."
+	sleep 10
+	kubectl get externalsecret -n payments-dev
+	kubectl get secret payment-gateway-key db-credentials -n payments-dev 2>/dev/null || \
+		echo "Secrets not yet synced — run: kubectl describe externalsecret -n payments-dev"
+
+	@echo ""
+	@echo "Secrets layer ready."
+	@echo "  OpenBao UI:  not enabled (dev mode)"
+	@echo "  ESO status:  kubectl get clustersecretstore"
+	@echo "  In GKE:      swap secret-store.yaml for k8s/secrets/gcp-secret-store.yaml"
+	@echo "               (terraform/secrets.tf provisions the GCP resources)"
 
 # ── Verify supply chain ───────────────────────────────────────────────────────
 # Confirms the latest pushed image carries a valid cosign keyless signature.

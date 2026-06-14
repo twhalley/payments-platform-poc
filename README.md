@@ -1134,6 +1134,147 @@ make verify-supply-chain
 
 ---
 
+### 17. Secrets management — OpenBao locally, GCP Secret Manager in production
+
+> **Why K8s Secrets alone aren't enough for PCI-DSS**
+>
+> A Kubernetes Secret is just a base64-encoded string stored in etcd. Without envelope encryption via KMS, anyone with `etcd` read access — or a `kubectl get secret` permission — gets the plaintext value. PCI-DSS Req 3.5 and 8.3 require secrets to be protected with strong cryptography, access-controlled at the individual secret level, and audit-logged on every access. K8s Secrets provide none of this out of the box.
+
+#### The three-component pattern
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  Secret store                  ESO               Pod                 │
+│  (OpenBao / GCP SM)  ──────►  ExternalSecret ──► K8s Secret         │
+│                               (reconcile loop)    (envFrom)          │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+1. **Secret store** — the authoritative source of truth for secret values
+2. **External Secrets Operator (ESO)** — watches `ExternalSecret` CRDs, fetches from the store, writes a K8s Secret
+3. **K8s Secret** — what the pod actually mounts; it is ephemeral and never persisted to git
+
+The pod manifest (`envFrom: secretRef: name: payment-gateway-key`) is identical regardless of whether the store is OpenBao or GCP Secret Manager. **Only the `ClusterSecretStore` changes between environments.**
+
+#### Local / Codespaces: OpenBao
+
+OpenBao is the open-source community fork of HashiCorp Vault, created after HashiCorp switched to the Business Source Licence. The API is identical — ESO's `vault` provider works with OpenBao unchanged.
+
+```bash
+# Install ESO + OpenBao, seed demo secrets, apply ExternalSecrets:
+make secrets
+```
+
+What this does, step by step:
+1. Installs ESO with CRDs into `external-secrets` namespace
+2. Installs OpenBao in dev mode (single-node, in-memory, auto-unsealed, root token = `root`)
+3. Creates a K8s Secret in `external-secrets` containing the root token — ESO uses this to authenticate
+4. Port-forwards OpenBao and seeds two secrets:
+   - `secret/payments/gateway` → `api_key` (random hex, simulates a payment gateway credential)
+   - `secret/payments/database` → `password` + `host`
+5. Applies the `ClusterSecretStore` (points ESO at OpenBao) and two `ExternalSecret` manifests
+6. ESO reconciles within ~10 seconds and creates `payment-gateway-key` and `db-credentials` K8s Secrets in `payments-dev`
+
+```bash
+# Verify sync:
+kubectl get externalsecret -n payments-dev
+# NAME                   STORE     REFRESH INTERVAL   STATUS   READY
+# payment-gateway-key    openbao   1m                 True     True
+# db-credentials         openbao   1m                 True     True
+
+kubectl get secret payment-gateway-key -n payments-dev -o jsonpath='{.data.api_key}' | base64 -d
+# poc-demo-gateway-key-<random hex>
+
+# Describe a secret to see ESO sync events:
+kubectl describe externalsecret payment-gateway-key -n payments-dev
+```
+
+**Rotation demo:** Update the value in OpenBao, then within 1 minute ESO syncs it without restarting the pod:
+
+```bash
+kubectl port-forward -n openbao svc/openbao 8200:8200 &
+export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=root
+bao kv patch secret/payments/gateway api_key="rotated-key-$(openssl rand -hex 8)"
+
+# Wait 60s then confirm the K8s Secret updated:
+kubectl get secret payment-gateway-key -n payments-dev -o jsonpath='{.data.api_key}' | base64 -d
+```
+
+#### Production: GCP Secret Manager + Workload Identity
+
+In GKE, the store changes to GCP Secret Manager. The ExternalSecret manifests and pod specs stay identical.
+
+**Why GCP Secret Manager is better than running Vault in production:**
+
+| | OpenBao (self-hosted) | GCP Secret Manager |
+|---|---|---|
+| Encryption at rest | Vault transit (manage yourself) | Cloud KMS CMEK (our `terraform/kms.tf` key) |
+| HA | 3-node Raft cluster to operate | Fully managed, multi-region |
+| Authentication | Token / AppRole / K8s auth | Workload Identity (no credential in-cluster) |
+| Audit log | Vault audit backend | Cloud Audit Logs (satisfies PCI-DSS Req 10) |
+| Secret access IAM | Vault policies | IAM at individual secret level |
+| Cost | Infrastructure cost | Pay-per-access pricing |
+
+**Workload Identity — how ESO authenticates without a JSON key file:**
+
+```
+ESO pod (K8s SA: external-secrets-sa)
+  └──► GKE metadata server: "who am I?"
+       └──► Workload Identity maps K8s SA → GCP SA (external-secrets-sa@project.iam)
+            └──► GCP SA has secretmanager.secretAccessor on exactly these secrets
+                 └──► GCP Secret Manager returns the secret value
+```
+
+No JSON key file. No static credential in-cluster. Token lifetime: 1 hour, auto-rotated by GKE.
+
+**Terraform provisions the GCP side** (`terraform/secrets.tf`):
+- `google_secret_manager_secret` resources with CMEK encryption
+- `google_service_account` for ESO with `secretmanager.secretAccessor` on individual secrets only (not project-wide)
+- `google_service_account_iam_member` binding the K8s SA → GCP SA (Workload Identity)
+
+**To switch from OpenBao to GCP Secret Manager:**
+
+```bash
+# 1. Apply Terraform to create GCP resources:
+cd terraform && terraform apply -var-file=../example.tfvars
+
+# 2. Swap the ClusterSecretStore (only this file changes):
+kubectl delete -f k8s/secrets/secret-store.yaml
+kubectl apply  -f k8s/secrets/gcp-secret-store.yaml
+
+# 3. Create secrets in GCP SM (one-time, by a human with appropriate IAM):
+gcloud secrets versions add payment-gateway-key \
+  --data-file=<(echo -n "real-gateway-key-value")
+gcloud secrets versions add db-credentials-password \
+  --data-file=<(echo -n "real-db-password")
+
+# 4. ExternalSecret manifests are UNCHANGED — ESO picks up the new store automatically
+kubectl get externalsecret -n payments-dev
+```
+
+#### PCI-DSS coverage
+
+| Requirement | How secrets management addresses it |
+|---|---|
+| Req 3.5 — protect cryptographic keys | Keys never in git; ESO fetches at runtime; CMEK encryption at rest |
+| Req 7.2 — least-privilege access | ESO SA has `secretAccessor` on individual secrets, not project-wide |
+| Req 8.3 — secure individual credentials | DB password and API key stored separately; independently rotatable |
+| Req 10.2 — audit log access | Every GCP SM `access` call appears in Cloud Audit Logs |
+| Req 12.3 — protect system components | Workload Identity eliminates the JSON key file attack surface |
+
+#### Key files
+
+| File | Purpose |
+|---|---|
+| [`k8s/secrets/openbao-values.yaml`](k8s/secrets/openbao-values.yaml) | OpenBao Helm values (dev mode — local/Codespaces) |
+| [`k8s/secrets/secret-store.yaml`](k8s/secrets/secret-store.yaml) | ESO `ClusterSecretStore` → OpenBao (local environment) |
+| [`k8s/secrets/gcp-secret-store.yaml`](k8s/secrets/gcp-secret-store.yaml) | ESO `ClusterSecretStore` → GCP Secret Manager (production — GKE only) |
+| [`k8s/secrets/external-secret.yaml`](k8s/secrets/external-secret.yaml) | Two `ExternalSecret` CRDs (identical in both environments) |
+| [`terraform/secrets.tf`](terraform/secrets.tf) | GCP SM secrets + ESO service account + Workload Identity IAM |
+| [`scripts/seed-secrets.sh`](scripts/seed-secrets.sh) | Seeds OpenBao with demo values (called by `make secrets`) |
+
+---
+
 ## JD mapping
 
 Every JD requirement maps to specific files in this repo. Open the file directly to show evidence.
@@ -1166,6 +1307,7 @@ Every JD requirement maps to specific files in this repo. Open the file directly
 | Policy unit testing | Step 16H | `kyverno/tests/unit-test.yaml`, `kyverno/tests/resources.yaml`, `make kyverno-test` |
 | RBAC least-privilege audit | — | `k8s/rbac/rbac.yaml`, `make rbac-audit` (`kubectl auth can-i` for each service account) |
 | Supply chain signature verification | Step 12, 16B | `make verify-supply-chain` (cosign verify + jq proof), `kyverno/policies/verify-images.yaml` |
+| Secrets management (ESO + OpenBao / GCP SM) | Step 17 | `k8s/secrets/openbao-values.yaml`, `k8s/secrets/secret-store.yaml`, `k8s/secrets/external-secret.yaml`, `k8s/secrets/gcp-secret-store.yaml`, `terraform/secrets.tf`, `scripts/seed-secrets.sh` |
 
 ## Note on scope
 
@@ -1397,7 +1539,8 @@ This PoC demonstrates the same pattern:
 | HPA autoscaling | `k8s/base/hpa.yaml` + k6 load test demo |
 | PodDisruptionBudget | `k8s/base/pdb.yaml`, `k8s/rabbitmq/pdb.yaml` |
 | Async payment flow | `k8s/rabbitmq/` — 3-node quorum, DLQ, delivery\_mode=2, ACK |
-| Terraform (GCP/GKE) | `terraform/` — private cluster, VPC, Cloud Armor WAF, KMS, Binary Authorization |
+| Terraform (GCP/GKE) | `terraform/` — private cluster, VPC, Cloud Armor WAF, KMS, Binary Authorization, Secret Manager |
+| Secrets management | `k8s/secrets/` — ESO + OpenBao locally; `gcp-secret-store.yaml` + `terraform/secrets.tf` for GCP SM in production |
 | Local dev | `Tiltfile`, `.devcontainer/devcontainer.json`, GitHub Codespaces |
 | PCI-DSS mapping | `docs/pci-dss-mapping.md` |
 | Framework alignment | NIST CSF, ISO 27001, CE+, DSOMM, DoD DevSecOps |
@@ -1413,7 +1556,7 @@ in an interview, which is better than pretending everything is complete.
 
 | Gap | Why it matters | How to close it |
 |---|---|---|
-| **External Secrets Operator or HashiCorp Vault** | K8s Secrets are base64-encoded, not encrypted at rest without KMS. In production, secrets should be fetched from Vault/AWS SM at pod start time | Add ESO + Vault or AWS Secrets Manager |
+| ~~**External Secrets Operator / Vault**~~ | ✅ Implemented — ESO + OpenBao locally, GCP Secret Manager in production (`k8s/secrets/`, `terraform/secrets.tf`) | Done |
 | **Third-party penetration test** | PCI-DSS Req 11 explicitly requires external pen testing by a QSA. Automated scanning is not a substitute | Engage an accredited QSA firm |
 | **kube-bench (CIS Kubernetes Benchmark)** | CIS benchmarks check control-plane and node configuration settings that Kyverno and PSS don't cover | Add `kube-bench` as a Kubernetes Job in CI |
 | **OpenSSF Scorecard** | Scores the repo's supply chain health (branch protection, code review, pinned dependencies) and publishes a badge | Add `scorecard.yml` GitHub Action |
@@ -1429,4 +1572,5 @@ Most interview PoCs show one or two of these. This one shows all of them:
 4. **Runtime detection** — Falco eBPF catches behaviour that admission policies cannot (post-compromise activity inside a running container)
 5. **SAST in two languages** — Python and PHP vulnerability demos with CWE annotations, showing the same bug classes in different runtimes
 6. **Three-layer secret defence** — pre-commit hook → GitHub Push Protection → Trivy CI scan (demonstrated live during development)
-7. **Framework-mapped controls** — every control maps to NIST CSF, ISO 27001 Annex A, UK Cyber Essentials Plus, OWASP DSOMM, and DoD DevSecOps Reference Design
+7. **Proper secrets management** — ESO + OpenBao locally with identical ExternalSecret manifests swapped for GCP Secret Manager in production via Workload Identity; only the ClusterSecretStore changes
+8. **Framework-mapped controls** — every control maps to NIST CSF, ISO 27001 Annex A, UK Cyber Essentials Plus, OWASP DSOMM, and DoD DevSecOps Reference Design
