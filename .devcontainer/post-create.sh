@@ -29,14 +29,16 @@ curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sudo
 echo "==> Installing grype (SBOM vulnerability scanner)..."
 curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sudo sh -s -- -b /usr/local/bin
 
-echo "==> Installing Trivy v0.51.0..."
+echo "==> Installing Trivy (latest stable)..."
 curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-  | sudo sh -s -- -b /usr/local/bin v0.51.0
+  | sudo sh -s -- -b /usr/local/bin
 
-echo "==> Installing Kyverno CLI v1.12.0..."
+echo "==> Installing Kyverno CLI (latest stable)..."
+KYVERNO_VERSION=$(curl -s https://api.github.com/repos/kyverno/kyverno/releases/latest \
+  | grep '"tag_name"' | head -1 | sed 's/.*"v\([^"]*\)".*/\1/')
 curl -Lo /tmp/kyverno-cli.tar.gz \
-  https://github.com/kyverno/kyverno/releases/download/v1.12.0/kyverno-cli_v1.12.0_linux_x86_64.tar.gz
-tar -xzf /tmp/kyverno-cli.tar.gz -C /tmp kyverno
+  "https://github.com/kyverno/kyverno/releases/download/v${KYVERNO_VERSION}/kyverno-cli_v${KYVERNO_VERSION}_linux_x86_64.tar.gz"
+tar -xzf /tmp/kyverno-cli.tar.gz -C /tmp
 sudo install -m 0755 /tmp/kyverno /usr/local/bin/kyverno
 rm -f /tmp/kyverno-cli.tar.gz /tmp/kyverno
 
