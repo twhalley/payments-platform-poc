@@ -47,13 +47,15 @@ Codespaces is the primary demo path — no local installs, no Podman/Docker setu
 
 The full stack (kind + Istio + Prometheus + RabbitMQ + Kyverno + Loki) needs ~6 GB RAM.
 
-1. Open the repo on GitHub
-2. Click **Code → Codespaces → New with options...**
-3. Set **Machine type: 4-core** (8 GB RAM, 32 GB storage)
-4. Click **Create codespace**
+1. Open `https://github.com/twhalley/payments-platform-poc`
+2. Click the green **Code** button → **Codespaces** tab
+3. Click **...** → **New with options...**
+4. Set **Branch** → `feat/devsecops-poc-scaffold`
+5. Set **Machine type** → **4-core · 8 GB RAM · 32 GB storage**
+6. Click **Create codespace**
 
-> The 2-core free tier will run out of memory when Istio and Prometheus are both running.
-> 4-core is the minimum for the full stack.
+> Do not use "Create codespace" directly — it defaults to 2-core which will OOM when
+> Istio and Prometheus are both running. Always use **New with options** to pick 4-core.
 
 ### Step 2 — Wait for the DevContainer to build (~3 minutes)
 
@@ -108,6 +110,13 @@ Port forwards are auto-configured. Click the **Ports** tab in Codespaces (bottom
 | `make security-scan`, `kyverno-test` | ✅ Works | No cluster needed |
 | Terraform plan | ✅ Works | No cloud spend |
 | Falco modern_ebpf | ⚠️ Skipped | eBPF needs direct kernel access — not available inside a container. `make falco` prints a graceful explanation and points to the README walkthrough instead. |
+
+### GitHub Actions in Codespaces
+
+CI workflows run against the branch on every push. Two things to be aware of:
+
+- **OpenSSF Scorecard** — fires on push to `master` only. To see the live badge and Security tab results, merge the branch. To trigger manually: **Actions → OpenSSF Scorecard → Run workflow**.
+- **DAST (ZAP)** — requires a running target URL. It runs automatically on push to `master`; in Codespaces you can trigger it manually against a port-forwarded nginx instance.
 
 > *"I set up a DevContainer so any engineer on the team can clone this and have the full
 > stack running in a Codespace in under 5 minutes — no 'works on my machine' issues,
