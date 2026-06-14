@@ -50,10 +50,11 @@ curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64
 sudo install -m 0755 kind /usr/local/bin/kind && rm kind
 
 # k6 (load testing — used in the HPA autoscaling demo)
-curl -s https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
-  | sudo tee /etc/apt/sources.list.d/k6.list
-sudo apt-get update && sudo apt-get install -y k6
+# Install via binary — avoids GPG repo issues on Debian
+K6_VERSION=$(curl -s https://api.github.com/repos/grafana/k6/releases/latest | grep -o '"tag_name": "v[^"]*"' | grep -o 'v[^"]*')
+curl -Lo /tmp/k6.tar.gz "https://github.com/grafana/k6/releases/download/${K6_VERSION}/k6-${K6_VERSION}-linux-amd64.tar.gz"
+tar -xzf /tmp/k6.tar.gz -C /tmp
+sudo install -m 0755 "/tmp/k6-${K6_VERSION}-linux-amd64/k6" /usr/local/bin/k6
 ```
 
 ### 2. Enable cgroup delegation for rootless Podman
