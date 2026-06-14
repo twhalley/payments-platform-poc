@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Bootstrap the kind cluster and deploy the core platform.
+# Bootstrap the cluster and deploy the core platform.
 # Idempotent — safe to re-run. Deletes and recreates the cluster if it exists.
 #
 # Auto-detects the runtime environment:
-#   GitHub Codespaces → plain kind (Docker via docker-in-docker feature)
+#   GitHub Codespaces → k3d (k3s in Docker)
+#     kind fails in the Codespaces DinD environment: kubectl running inside kind
+#     node containers can't reach the API server via the container's bridge IP
+#     (hairpin NAT not supported), so CNI and StorageClass installation both fail.
+#     k3d bootstraps k3s entirely differently — no in-container kubectl calls.
 #   Local             → sudo kind with rootful Podman
 #
 # Usage: bash scripts/cluster-setup.sh
@@ -12,45 +16,45 @@ set -euo pipefail
 
 # ── Environment detection ──────────────────────────────────────────────────────
 if [[ "${CODESPACES:-}" == "true" ]]; then
-  RUNTIME="GitHub Codespaces (Docker)"
-  KIND_CONFIG="kind-config-codespaces.yaml"
-  # In Codespaces, Docker is available without sudo via docker-in-docker feature
-  run_kind() { kind "$@"; }
+  RUNTIME="GitHub Codespaces (k3d)"
 else
-  RUNTIME="local (rootful Podman)"
-  KIND_CONFIG="kind-config.yaml"
-  # Locally, kind uses rootful Podman — see README § Local prerequisites
-  run_kind() { sudo KIND_EXPERIMENTAL_PROVIDER=podman kind "$@"; }
+  RUNTIME="local (rootful Podman / kind)"
 fi
 
 echo "==> Runtime: $RUNTIME"
-echo "==> Kind config: $KIND_CONFIG"
 
 # ── Cluster ───────────────────────────────────────────────────────────────────
-echo "==> Creating kind cluster..."
-if run_kind get clusters 2>/dev/null | grep -q "^payments-poc$"; then
-  echo "    Cluster already exists — deleting and recreating..."
-  run_kind delete cluster --name payments-poc
-fi
-run_kind create cluster --config "$KIND_CONFIG"
-
-echo "==> Exporting kubeconfig..."
-mkdir -p ~/.kube
-run_kind get kubeconfig --name payments-poc > ~/.kube/config
-chmod 600 ~/.kube/config
-export KUBECONFIG=~/.kube/config
-
-# ── CNI (Codespaces only) ─────────────────────────────────────────────────────
-# The Codespaces kind config sets disableDefaultCNI: true because kind's built-in
-# CNI installer runs kubectl *inside* the kind container, which fails with
-# "connection refused on 6443" — hairpin NAT is not supported by the DinD bridge.
-# Install Flannel from outside instead: kubectl here runs in the devcontainer and
-# reaches the API server through kind's external port mapping, which works fine.
 if [[ "${CODESPACES:-}" == "true" ]]; then
-  echo "==> Installing CNI (Flannel)..."
-  kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
-  echo "==> Waiting for nodes to be Ready..."
-  kubectl wait node --for=condition=Ready --all --timeout=180s
+  echo "==> Creating k3d cluster..."
+  if k3d cluster list 2>/dev/null | grep -q "payments-poc"; then
+    echo "    Cluster already exists — deleting and recreating..."
+    k3d cluster delete payments-poc
+  fi
+  # --disable=traefik: k3s ships Traefik as ingress; we use nginx-unprivileged
+  # --agents 1: one server + one agent = 2-node cluster (mirrors kind 2-node setup)
+  k3d cluster create payments-poc \
+    --agents 1 \
+    --k3s-arg "--disable=traefik@server:*" \
+    --wait
+
+  echo "==> Exporting kubeconfig..."
+  mkdir -p ~/.kube
+  k3d kubeconfig get payments-poc > ~/.kube/config
+  chmod 600 ~/.kube/config
+  export KUBECONFIG=~/.kube/config
+else
+  echo "==> Creating kind cluster..."
+  if sudo KIND_EXPERIMENTAL_PROVIDER=podman kind get clusters 2>/dev/null | grep -q "^payments-poc$"; then
+    echo "    Cluster already exists — deleting and recreating..."
+    sudo KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name payments-poc
+  fi
+  sudo KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster --config kind-config.yaml
+
+  echo "==> Exporting kubeconfig..."
+  mkdir -p ~/.kube
+  sudo KIND_EXPERIMENTAL_PROVIDER=podman kind get kubeconfig --name payments-poc > ~/.kube/config
+  chmod 600 ~/.kube/config
+  export KUBECONFIG=~/.kube/config
 fi
 
 # ── Namespaces ────────────────────────────────────────────────────────────────

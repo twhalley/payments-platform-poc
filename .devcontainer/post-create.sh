@@ -13,6 +13,9 @@ echo "==> Installing kind v0.32.0..."
 curl -Lo /tmp/kind https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
 sudo install -m 0755 /tmp/kind /usr/local/bin/kind && rm /tmp/kind
 
+echo "==> Installing k3d (latest stable)..."
+curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | sudo bash
+
 echo "==> Installing k6 v2.0.0..."
 curl -Lo /tmp/k6.tar.gz https://github.com/grafana/k6/releases/download/v2.0.0/k6-v2.0.0-linux-amd64.tar.gz
 tar -xzf /tmp/k6.tar.gz -C /tmp
@@ -56,6 +59,7 @@ grep -q 'KUBECONFIG' ~/.zshrc  2>/dev/null || echo 'export KUBECONFIG=~/.kube/co
 echo ""
 echo "All tools installed:"
 echo "  kind    $(kind --version)"
+echo "  k3d     $(k3d version | head -1)"
 echo "  kubectl $(kubectl version --client --short 2>/dev/null || kubectl version --client)"
 echo "  helm    $(helm version --short)"
 echo "  k6      $(k6 version)"

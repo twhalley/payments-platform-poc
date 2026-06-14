@@ -64,7 +64,8 @@ The `post-create.sh` script runs automatically and installs:
 
 | Tool | Version | Used by |
 |---|---|---|
-| kind | v0.32.0 | Kubernetes cluster |
+| k3d | latest stable | Kubernetes cluster (Codespaces) |
+| kind | v0.32.0 | Kubernetes cluster (local, with Podman) |
 | k6 | v2.0.0 | HPA load test |
 | cosign | v2.2.4 | Supply chain signing |
 | syft | latest | SBOM generation |
@@ -75,7 +76,7 @@ The `post-create.sh` script runs automatically and installs:
 
 kubectl and helm are installed by the devcontainer feature. terraform is also available.
 
-> **Docker in Codespaces:** the DevContainer uses `docker-in-docker` (DinD) with `"runArgs": ["--privileged"]`. DooD (docker-outside-of-docker) was tried first but the Codespace host daemon's security profile prevents kind's kubelet from starting — port 6443 never opens and CNI installation fails. DinD runs a dedicated Docker daemon inside the devcontainer, giving kind node containers the cgroup access kubeadm/kubelet require. Codespaces prebuilds support privileged mode. `moby: false` is set because `base:debian` resolves to Debian trixie (13) where `moby-cli` packages are not available; Docker CE is used instead.
+> **Docker in Codespaces:** the DevContainer uses `docker-in-docker` (DinD) with `"runArgs": ["--privileged"]` and **k3d** for cluster creation. kind was tried first (both DooD and DinD variants) but consistently fails: kubectl running inside kind node containers can't reach the API server via the container's bridge IP (Docker DinD bridge doesn't support hairpin NAT), so CNI and StorageClass installation both fail. k3d bootstraps k3s with no in-container kubectl calls and works reliably. `moby: false` keeps Docker CE for Debian trixie (13) compatibility.
 
 ### Step 3 — Run the demo
 
@@ -105,7 +106,7 @@ Port forwards are auto-configured. Click the **Ports** tab in Codespaces (bottom
 
 | Component | Status | Notes |
 |---|---|---|
-| kind cluster, HPA, Kustomize, Helm | ✅ Works | Core demo — requires DinD (see devcontainer.json); `kindest/node:v1.32.3` pinned |
+| kind cluster, HPA, Kustomize, Helm | ✅ Works | Core demo — uses k3d in Codespaces (kind fails due to DinD hairpin NAT) |
 | ArgoCD, Prometheus, Grafana, Loki | ✅ Works | Full observability |
 | RabbitMQ, producer/consumer | ✅ Works | Async payment flow |
 | Kyverno admission policies | ✅ Works | Including A/B admission demo |
