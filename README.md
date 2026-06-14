@@ -31,6 +31,61 @@ mirroring a GCP/GKE production target.
 | Local dev loop | Tiltfile — watch-and-sync on manifest change |
 | PCI-DSS mapping | `docs/pci-dss-mapping.md` |
 
+## Prerequisites
+
+Run once on a fresh Debian/Ubuntu machine before anything else.
+
+### 1. Install tools
+
+```bash
+# kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -m 0755 kubectl /usr/local/bin/kubectl && rm kubectl
+
+# helm
+curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# kind (check https://github.com/kubernetes-sigs/kind/releases for latest)
+curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64
+sudo install -m 0755 kind /usr/local/bin/kind && rm kind
+
+# k6 (load testing — used in the HPA autoscaling demo)
+curl -s https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+  | sudo tee /etc/apt/sources.list.d/k6.list
+sudo apt-get update && sudo apt-get install -y k6
+```
+
+### 2. Enable cgroup delegation for rootless Podman
+
+kind needs the `cpu`, `cpuset`, `io`, `memory`, and `pids` cgroup controllers delegated to
+your user. Without this the cluster will hang at "Starting control-plane" and time out.
+
+```bash
+sudo mkdir -p /etc/systemd/system/user@.service.d
+sudo tee /etc/systemd/system/user@.service.d/delegate.conf <<'EOF'
+[Service]
+Delegate=cpu cpuset io memory pids
+EOF
+sudo systemctl daemon-reload
+```
+
+**Log out and back in** — delegation only takes effect on a fresh user session.
+
+Verify before continuing:
+```bash
+cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers
+# expected: cpuset cpu io memory pids
+```
+
+### 3. Tell kind to use Podman (add to `~/.bashrc` or `~/.zshrc`)
+
+```bash
+export KIND_EXPERIMENTAL_PROVIDER=podman
+```
+
+---
+
 ## Quickstart
 
 ```bash
