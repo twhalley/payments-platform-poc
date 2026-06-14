@@ -16,7 +16,11 @@
     // docker-in-docker requires privileged mode which Codespaces prebuilds
     // don't support — DooD is the correct approach here.
     // kind creates cluster nodes as containers on the host daemon, so it works.
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {},
+    // moby:false — the base:debian image now resolves to Debian trixie (13),
+    // where moby-cli packages are not yet available; use Docker CE CLI instead.
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+      "moby": false
+    },
     // kubectl + helm (minikube excluded — we use kind)
     "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
       "version": "latest",
