@@ -164,30 +164,53 @@ jobs:
             --type spdxjson \
             ghcr.io/${{ github.repository }}/nginx-app@${{ needs.build-scan.outputs.image-digest }}
 
-  # ── 6. Bump image tag in Kustomize overlay → ArgoCD picks it up ───────────────
+  # ── 6. Bump image tag in Kustomize overlay → opens a PR for ArgoCD gitops ─────
+  # Branch protection prevents github-actions[bot] from pushing directly to master.
+  # Correct GitOps pattern: CI opens a PR with the image bump; human (or auto-merge
+  # policy) merges it; ArgoCD detects the change in master and syncs the cluster.
   deploy:
     name: Update Manifest (GitOps bump)
     runs-on: ubuntu-latest
     needs: sign
     if: github.event_name != 'pull_request'
+    permissions:
+      contents: write       # push the gitops bump branch
+      pull-requests: write  # open the PR against master
     steps:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Bump image tag in dev overlay
+      - name: Open GitOps bump PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cd k8s/overlays/dev
-          # If the overlay has an images patch, update the digest; otherwise add it.
-          cat >> kustomization.yaml <<EOF
-          images:
-            - name: nginxinc/nginx-unprivileged
-              newName: ghcr.io/${{ github.repository }}/nginx-app
-              newTag: ${{ github.sha }}
-          EOF
-          # Deduplicate if already present (idempotent push)
+          BUMP_BRANCH="gitops/bump-${{ github.sha }}"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add kustomization.yaml
-          git diff --staged --quiet || git commit -m "chore: bump nginx-app to ${{ github.sha }}"
-          git push
+          git checkout -b "$BUMP_BRANCH"
+
+          # Idempotent: replace existing newTag line or append the images block
+          if grep -q "newTag:" k8s/overlays/dev/kustomization.yaml; then
+            sed -i "s|newTag:.*|newTag: ${{ github.sha }}|" k8s/overlays/dev/kustomization.yaml
+          else
+            printf '\nimages:\n  - name: nginxinc/nginx-unprivileged\n    newName: ghcr.io/${{ github.repository }}/nginx-app\n    newTag: ${{ github.sha }}\n' \
+              >> k8s/overlays/dev/kustomization.yaml
+          fi
+
+          git add k8s/overlays/dev/kustomization.yaml
+          if git diff --staged --quiet; then
+            echo "No changes — image tag already up to date."
+            exit 0
+          fi
+
+          git commit -m "chore: bump nginx-app to ${{ github.sha }}"
+          git push origin "$BUMP_BRANCH"
+
+          # Open PR; silently succeed if one already exists for this SHA
+          gh pr create \
+            --title "GitOps: bump nginx-app to $(echo '${{ github.sha }}' | cut -c1-7)" \
+            --body "Automated image-tag bump triggered by [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})." \
+            --head "$BUMP_BRANCH" \
+            --base master \
+            --label "gitops" 2>/dev/null || echo "PR already exists for this SHA."
