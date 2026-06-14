@@ -1,5 +1,5 @@
-.PHONY: cluster destroy load-test watch argocd prometheus rabbitmq \
-        kyverno istio falco terraform-plan clean help
+.PHONY: cluster destroy load-test watch argocd prometheus loki alert-rules \
+        rabbitmq kyverno istio falco terraform-plan clean help
 
 NAMESPACE  := payments-dev
 KUBECONFIG ?= $(HOME)/.kube/config
@@ -16,6 +16,8 @@ help:
 	@echo "  make kyverno        Install Kyverno + apply all admission policies"
 	@echo "  make istio          Install Istio + apply mTLS + AuthorizationPolicy"
 	@echo "  make falco          Install Falco runtime threat detection"
+	@echo "  make loki           Install Loki + Promtail log aggregation"
+	@echo "  make alert-rules    Apply Prometheus AlertManager alert rules"
 	@echo "  make terraform-plan Validate GCP/GKE IaC with terraform plan"
 	@echo "  make destroy        Tear down the kind cluster"
 	@echo "  make all            Run everything (cluster → all platform components)"
@@ -35,7 +37,11 @@ load-test:
 	@echo "Port-forwarding nginx to localhost:8080..."
 	kubectl port-forward -n $(NAMESPACE) svc/dev-nginx-app 8080:80 &
 	@sleep 2
-	k6 run -e TARGET_URL=http://localhost:8080 scripts/load-test.js
+	k6 run -e TARGET_URL=http://localhost:8080 \
+		--summary-export=k6-summary.json \
+		scripts/load-test.js
+	@echo ""
+	@echo "Summary written to k6-summary.json"
 
 # ── Phase 3: ArgoCD ───────────────────────────────────────────────────────────
 argocd:
@@ -109,6 +115,23 @@ istio:
 	kubectl apply -f istio/authorization-policy.yaml
 	@echo "Istio installed — mTLS STRICT enforced in $(NAMESPACE)"
 
+# ── Loki log aggregation ──────────────────────────────────────────────────────
+loki:
+	helm repo add grafana https://grafana.github.io/helm-charts --force-update 2>/dev/null
+	helm upgrade --install loki-stack grafana/loki-stack \
+		--namespace monitoring --create-namespace \
+		--values monitoring/values-loki-stack.yaml \
+		--wait
+	@echo ""
+	@echo "Loki ready. Add data source in Grafana:"
+	@echo "  URL: http://loki-stack:3100"
+	@echo "  Then use LogQL to query: {namespace=\"payments-dev\"}"
+
+# ── AlertManager rules ────────────────────────────────────────────────────────
+alert-rules:
+	kubectl apply -f monitoring/alert-rules.yaml
+	@echo "Alert rules applied. View in Grafana → Alerting → Alert rules"
+
 # ── Phase 12: Falco runtime security ──────────────────────────────────────────
 falco:
 	helm repo add falcosecurity https://falcosecurity.github.io/charts --force-update 2>/dev/null
@@ -127,6 +150,6 @@ terraform-plan:
 	cd terraform && terraform init -upgrade && terraform plan -var-file=../example.tfvars
 
 # ── Run everything ─────────────────────────────────────────────────────────────
-all: cluster argocd prometheus rabbitmq kyverno istio falco
+all: cluster argocd prometheus loki alert-rules rabbitmq kyverno istio falco
 	@echo ""
 	@echo "Full stack deployed. Run 'make load-test' in one terminal and 'make watch' in another."

@@ -21,7 +21,9 @@ mirroring a GCP/GKE production target.
 | Static analysis | GitHub CodeQL + Copilot Autofix |
 | Supply chain integrity | syft SBOM + cosign keyless sign + SLSA provenance + Kyverno admission gate |
 | Autoscaling | HPA — CPU spike demo with k6 load test |
-| Observability | Prometheus + Grafana (kube-prometheus-stack) |
+| Observability | Prometheus + Grafana + Loki (PLG stack — metrics + logs in one pane) |
+| Alerting | AlertManager rules: HPA at max, pod crash loop, RabbitMQ queue depth |
+| DAST | OWASP ZAP baseline scan on every push — HTML report as CI artifact |
 | Service mesh / mTLS | Istio PeerAuthentication (STRICT) + AuthorizationPolicy |
 | Policy admission | Kyverno + Pod Security Standards (two independent gates) |
 | Runtime security | Falco — syscall-level threat detection |
@@ -507,7 +509,66 @@ kubectl run unsigned --image=alpine --namespace payments-dev
 
 ---
 
-### 13. PCI-DSS audit mapping
+### 13. Loki — log aggregation (PLG stack)
+
+```bash
+make loki
+```
+
+Add Loki as a Grafana data source:
+- Grafana → Connections → Data sources → Add → Loki
+- URL: `http://loki-stack:3100`
+
+Then query logs alongside metrics in the same dashboard:
+```logql
+{namespace="payments-dev"} |= "payment.authorised"
+{namespace="payments-dev", container="consumer"} | json | line_format "{{.message}}"
+```
+
+Apply alert rules:
+```bash
+make alert-rules
+```
+
+Open Grafana → Alerting → Alert rules — you'll see:
+- **HPAAtMaxReplicas** — fires if HPA stays at max for 5 minutes
+- **PodCrashLooping** — fires after 3 restarts in 15 minutes
+- **RabbitMQQueueDepthHigh** — fires when queue > 1000 messages
+- **RabbitMQNodeDown** — fires within 1 minute of a broker node going offline
+
+> *"Prometheus gives you metrics. Loki gives you logs. Together in Grafana you get the
+> full picture: you see CPU spike in the metric, then correlate it with the exact log
+> line that caused it — without switching tools. For PCI-DSS Requirement 10, 30-day
+> log retention is configured in both Prometheus and Loki. The AlertManager rules mean
+> we know about problems before customers do — which is the stated goal."*
+
+---
+
+### 14. DAST — OWASP ZAP dynamic scan
+
+This runs automatically in GitHub Actions (`.github/workflows/dast.yaml`) on every push
+to master and weekly. To understand what it covers:
+
+Open the **Actions tab** on GitHub → **DAST — OWASP ZAP** → download the `zap-report`
+artifact → open `report_html.html` in a browser.
+
+The report shows:
+- HTTP response headers checked (Content-Security-Policy, X-Frame-Options, HSTS)
+- Spider results — all URLs discovered and tested
+- Alerts by severity with evidence and remediation guidance
+
+Open `.zap/rules.tsv` — shows which rules are WARN vs IGNORE and why (e.g. HSTS is
+ignored because TLS terminates at Istio, not at nginx directly).
+
+> *"SAST and SCA tell you about problems in source code and known CVEs in packages.
+> DAST tells you what an attacker actually sees when they hit the running application over
+> HTTP. CodeQL won't catch a missing Content-Security-Policy header. ZAP will. Running
+> all three — SAST, SCA, DAST — is the complete shift-left picture. The HTML report is
+> a CI artifact so every engineer can see what the scanner found on their PR."*
+
+---
+
+### 15. PCI-DSS audit mapping
 
 ```bash
 cat docs/pci-dss-mapping.md

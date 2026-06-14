@@ -1,0 +1,106 @@
+# PrometheusRule — alerting rules for the payments platform.
+# Applied with: kubectl apply -f monitoring/alert-rules.yaml
+# Requires kube-prometheus-stack installed (provides the PrometheusRule CRD).
+#
+# Maps to PCI-DSS Requirement 10: log and monitor all access to system components.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: payments-platform-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack   # must match the Helm release name for Prometheus to pick it up
+spec:
+  groups:
+    - name: payments-platform.scaling
+      interval: 30s
+      rules:
+        - alert: HPAAtMaxReplicas
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas
+              == kube_horizontalpodautoscaler_spec_max_replicas
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} at max replicas"
+            description: >-
+              HPA has been at maximum replicas for 5 minutes.
+              Consider increasing maxReplicas or optimising the service under load.
+              Current: {{ $value }} replicas.
+
+        - alert: HPAScalingTooFrequently
+          expr: |
+            changes(kube_horizontalpodautoscaler_status_current_replicas[15m]) > 4
+          for: 1m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} scaling too frequently"
+            description: "More than 4 scaling events in 15 minutes — check for flapping."
+
+    - name: payments-platform.reliability
+      interval: 30s
+      rules:
+        - alert: PodCrashLooping
+          expr: |
+            rate(kube_pod_container_status_restarts_total{namespace=~"payments-.*"}[15m]) * 900 > 3
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping"
+            description: "Container {{ $labels.container }} has restarted more than 3 times in 15 minutes."
+
+        - alert: PodNotReady
+          expr: |
+            kube_pod_status_ready{namespace=~"payments-.*", condition="true"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} not ready"
+            description: "Pod has been in a non-ready state for 5 minutes."
+
+        - alert: DeploymentReplicasMismatch
+          expr: |
+            kube_deployment_spec_replicas{namespace=~"payments-.*"}
+              != kube_deployment_status_available_replicas{namespace=~"payments-.*"}
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has unavailable replicas"
+            description: "Desired: {{ $value }} replicas, but not all are available."
+
+    - name: payments-platform.rabbitmq
+      interval: 30s
+      rules:
+        - alert: RabbitMQQueueDepthHigh
+          expr: |
+            rabbitmq_queue_messages{namespace="payments-dev", queue="payment.authorised"} > 1000
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "RabbitMQ payment.authorised queue depth > 1000"
+            description: >-
+              Queue depth {{ $value }} — consumers may be falling behind.
+              Check consumer pod health and consider scaling consumer replicas.
+
+        - alert: RabbitMQNodeDown
+          expr: |
+            rabbitmq_up{namespace="payments-dev"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "RabbitMQ node down in {{ $labels.namespace }}"
+            description: "A RabbitMQ node has been unreachable for 1 minute — quorum may be at risk."

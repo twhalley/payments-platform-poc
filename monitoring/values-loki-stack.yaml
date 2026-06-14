@@ -1,0 +1,55 @@
+# Loki + Promtail — log aggregation alongside Prometheus metrics.
+# Together with Grafana they form the PLG stack: Prometheus (metrics), Loki (logs), Grafana (UI).
+#
+# Install:
+#   helm repo add grafana https://grafana.github.io/helm-charts
+#   helm upgrade --install loki-stack grafana/loki-stack \
+#     --namespace monitoring --create-namespace \
+#     --values monitoring/values-loki-stack.yaml \
+#     --wait
+#
+# After install, add Loki as a data source in Grafana:
+#   URL: http://loki-stack:3100
+
+loki:
+  enabled: true
+  isDefault: false
+  persistence:
+    enabled: false        # ephemeral — fine for PoC; use PVC in production
+  config:
+    retention_period: 720h  # 30 days — matches Prometheus retention for PCI-DSS audit trail
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 200m, memory: 256Mi }
+
+promtail:
+  enabled: true
+  config:
+    clients:
+      - url: http://loki-stack:3100/loki/api/v1/push
+    scrape_configs:
+      - job_name: kubernetes-pods
+        pipeline_stages:
+          - cri: {}
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: container
+          # Include payments-dev namespace logs specifically
+          - source_labels: [__meta_kubernetes_namespace]
+            action: keep
+            regex: "payments-dev|payments-prod"
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 100m, memory: 128Mi }
+
+grafana:
+  enabled: false    # already installed via kube-prometheus-stack; don't install a second instance

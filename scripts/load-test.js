@@ -1,6 +1,13 @@
 // k6 load test: ramp traffic into nginx to trigger HPA scale-out.
-// Run: k6 run scripts/load-test.js
-// Watch pods spawn: kubectl get hpa,pods -n payments-dev -w
+//
+// Basic run:
+//   k6 run -e TARGET_URL=http://localhost:8080 scripts/load-test.js
+//
+// With JSON summary (for CI artifact or further processing):
+//   k6 run -e TARGET_URL=http://localhost:8080 --summary-export=k6-summary.json scripts/load-test.js
+//
+// Watch pods spawn in another terminal:
+//   kubectl get hpa,pods -n payments-dev -w
 import http from "k6/http";
 import { check, sleep } from "k6";
 
