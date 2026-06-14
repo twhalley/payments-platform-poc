@@ -14,6 +14,7 @@ on:
     branches: [master]
   schedule:
     - cron: "0 2 * * 1"   # weekly Monday 2am — catch newly disclosed web vulns
+  workflow_dispatch:        # allow manual trigger for testing / re-runs
 
 permissions:
   contents: read
@@ -83,11 +84,15 @@ jobs:
                           "properties": {"security-severity": str(round(int(alert["riskcode"]) * 10 / 3, 1))}
                       })
                   for inst in alert.get("instances", []):
+                      uri = inst.get("uri", site.get("@name", ""))
+                      # DAST results reference HTTP URLs, not source files.
+                      # GitHub Code Scanning rejects physicalLocation with http:// URIs —
+                      # use logicalLocations (SARIF 2.1.0 §3.33) with kind="url" instead.
                       results.append({
                           "ruleId": rid,
                           "level": risk_to_level(alert["riskcode"]),
-                          "message": {"text": f"{alert['desc'].strip()}\n\nEvidence: {inst.get('evidence','')}\nSolution: {alert.get('solution','').strip()}"},
-                          "locations": [{"physicalLocation": {"artifactLocation": {"uri": inst.get("uri", site.get("@name", ""))}}}]
+                          "message": {"text": f"URL: {uri}\nMethod: {inst.get('method','')}\nEvidence: {inst.get('evidence','')}\n\n{alert['desc'].strip()}\n\nSolution: {alert.get('solution','').strip()}"},
+                          "locations": [{"logicalLocations": [{"name": uri, "kind": "url"}]}]
                       })
 
           sarif = {
