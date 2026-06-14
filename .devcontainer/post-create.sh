@@ -9,8 +9,8 @@ echo "==> Installing system packages..."
 sudo apt-get update -qq
 sudo apt-get install -y -qq jq python3-pip unzip
 
-echo "==> Installing kind v0.30.0..."
-curl -Lo /tmp/kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64
+echo "==> Installing kind v0.32.0..."
+curl -Lo /tmp/kind https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
 sudo install -m 0755 /tmp/kind /usr/local/bin/kind && rm /tmp/kind
 
 echo "==> Installing k6 v2.0.0..."
