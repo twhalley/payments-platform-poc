@@ -69,13 +69,13 @@ The `post-create.sh` script runs automatically and installs:
 | cosign | v2.2.4 | Supply chain signing |
 | syft | latest | SBOM generation |
 | grype | latest | SBOM CVE querying |
-| Trivy | v0.51.0 | `make security-scan` |
-| Kyverno CLI | v1.12.0 | `make kyverno-test` |
+| Trivy | latest stable | `make security-scan` |
+| Kyverno CLI | latest stable | `make kyverno-test` |
 | pre-commit | latest | Installed and active |
 
 kubectl and helm are installed by the devcontainer feature. terraform is also available.
 
-> **Docker in Codespaces:** the DevContainer uses `docker-outside-of-docker` (mounts the Codespace VM's Docker socket) rather than `docker-in-docker`. DinD requires privileged mode which Codespaces prebuilds don't support; DooD works transparently — `kind` creates cluster nodes on the host daemon exactly as it would with DinD.
+> **Docker in Codespaces:** the DevContainer uses `docker-outside-of-docker` (mounts the Codespace VM's Docker socket) rather than `docker-in-docker`. DinD requires privileged mode which Codespaces prebuilds don't support; DooD works transparently — `kind` creates cluster nodes on the host daemon exactly as it would with DinD. `moby: false` is set in [`.devcontainer/devcontainer.json`](.devcontainer/devcontainer.json) because `base:debian` now resolves to Debian trixie (13) where `moby-cli` packages are not yet available; Docker CE CLI is used instead.
 
 ### Step 3 — Run the demo
 
@@ -105,7 +105,7 @@ Port forwards are auto-configured. Click the **Ports** tab in Codespaces (bottom
 
 | Component | Status | Notes |
 |---|---|---|
-| kind cluster, HPA, Kustomize, Helm | ✅ Works | Core demo |
+| kind cluster, HPA, Kustomize, Helm | ✅ Works | Core demo — uses `kindest/node:v1.32.3` (pinned in `kind-config-codespaces.yaml`; see note below) |
 | ArgoCD, Prometheus, Grafana, Loki | ✅ Works | Full observability |
 | RabbitMQ, producer/consumer | ✅ Works | Async payment flow |
 | Kyverno admission policies | ✅ Works | Including A/B admission demo |
@@ -113,6 +113,8 @@ Port forwards are auto-configured. Click the **Ports** tab in Codespaces (bottom
 | `make security-scan`, `kyverno-test` | ✅ Works | No cluster needed |
 | Terraform plan | ✅ Works | No cloud spend |
 | Falco modern_ebpf | ⚠️ Skipped | eBPF needs direct kernel access — not available inside a container. `make falco` prints a graceful explanation and points to the README walkthrough instead. |
+
+> **kind node image:** `kind-config-codespaces.yaml` pins `kindest/node:v1.32.3`. The default image that ships with kind v0.32+ (v1.36.x) causes a `connection refused on 6443` failure during CNI installation in the docker-outside-of-docker environment — the API server isn't ready fast enough. v1.32.3 is the stable pinned baseline; update the image field here if you need a specific Kubernetes version.
 
 ### GitHub Actions in Codespaces
 
@@ -249,7 +251,7 @@ all security gates**. It maps directly to:
 | Dismiss stale reviews | ✅ Enabled | New commits invalidate existing approval |
 | Require status checks to pass | ✅ Enabled | CI gate must be green before merge |
 | Require branches to be up to date | ✅ Enabled | PR must include latest master before merge |
-| Required checks | `Lint Kustomize + Helm`, `Snyk Scan (code + IaC)`, `CodeQL Analysis`, `Build Image + Trivy Scan` | All four pre-merge jobs |
+| Required checks | `Lint Kustomize + Helm`, `Snyk IaC Scan`, `CodeQL Analysis`, `Build Image + Trivy Scan` | All four pre-merge jobs |
 | Require conversation resolution | ✅ Enabled | No unresolved review comments at merge |
 | Allow force pushes | ❌ Disabled | Prevents history rewriting on master |
 | Allow deletions | ❌ Disabled | Master cannot be deleted |
@@ -270,7 +272,7 @@ gh api \
     "strict": true,
     "contexts": [
       "Lint Kustomize + Helm",
-      "Snyk Scan (code + IaC)",
+      "Snyk IaC Scan",
       "CodeQL Analysis",
       "Build Image + Trivy Scan"
     ]
@@ -563,12 +565,12 @@ and watch ArgoCD detect drift and reconcile within 3 minutes without any manual 
 Open `.github/workflows/ci.yaml` on GitHub and walk through the jobs:
 
 1. **lint** — Kustomize dry-run + `helm lint` before anything builds
-2. **snyk** — AI-powered IaC scan (Terraform + K8s manifests); results appear in the GitHub Security tab
+2. **snyk** — IaC scan (Terraform + K8s manifests) using the Snyk CLI binary; SARIF uploaded to the GitHub Security tab. If `SNYK_TOKEN` is not set the job exits cleanly with a notice rather than failing.
 3. **codeql** — GitHub AI static analysis for Python with Copilot Autofix suggestions on PR diffs
 4. **semgrep** — OSS SAST for PHP and Python using the `p/php` + `p/python` rulesets; surfaces findings from `demo/insecure-code/vulnerable_payment.php` (CWE-89, CWE-79, CWE-78, CWE-22, CWE-327) in the Security tab. CodeQL does not support PHP natively — Semgrep fills that gap.
 5. **build-scan** — builds the image, Trivy scans for CVEs/secrets/misconfigs, exits 1 on CRITICAL/HIGH (patchable only — `ignore-unfixed: true`)
 6. **sign** — cosign keyless signing via GitHub OIDC (no long-lived keys) + syft SBOM attached as OCI attestation; separate `supply-chain.yaml` workflow adds CycloneDX SBOM and GitHub-native SLSA provenance
-7. **deploy** — opens a PR on a `gitops/bump-{sha}` branch with the new image tag; ArgoCD picks it up after merge. Branch protection prevents `github-actions[bot]` from pushing directly to master — opening a PR is the correct GitOps promotion pattern.
+7. **deploy** — opens a PR on a `gitops/bump-{sha}` branch with the new image tag; ArgoCD picks it up after merge. Branch protection prevents `github-actions[bot]` from pushing directly to master — opening a PR is the correct GitOps promotion pattern. The branch is force-pushed on reruns so the PR stays idempotent; `can_approve_pull_request_reviews` must be enabled in repo Actions settings for PR creation to succeed.
 
 Point at the pinned action versions:
 ```yaml
@@ -815,10 +817,12 @@ Open Grafana → Alerting → Alert rules — you'll see:
 ### 14. DAST — OWASP ZAP dynamic scan
 
 This runs automatically in GitHub Actions (`.github/workflows/dast.yaml`) on every push
-to master and weekly. To understand what it covers:
+to master, weekly (Monday 2am), and can be triggered manually via **Actions → DAST — OWASP ZAP → Run workflow**.
 
-Open the **Actions tab** on GitHub → **DAST — OWASP ZAP** → download the `zap-report`
-artifact → open `report_html.html` in a browser.
+Findings surface in two places:
+
+1. **GitHub Security tab** — ZAP output is converted to SARIF and uploaded with `category: zap-baseline`. Each alert appears as a code scanning alert anchored to `dast/scan-target.txt` (the physical location anchor required by GitHub Code Scanning, since DAST findings reference HTTP endpoints rather than source lines).
+2. **CI artifact** — download the `zap-report` artifact from the Actions run → open `report_html.html` in a browser.
 
 The report shows:
 - HTTP response headers checked (Content-Security-Policy, X-Frame-Options, HSTS)
@@ -831,8 +835,9 @@ ignored because TLS terminates at Istio, not at nginx directly).
 > *"SAST and SCA tell you about problems in source code and known CVEs in packages.
 > DAST tells you what an attacker actually sees when they hit the running application over
 > HTTP. CodeQL won't catch a missing Content-Security-Policy header. ZAP will. Running
-> all three — SAST, SCA, DAST — is the complete shift-left picture. The HTML report is
-> a CI artifact so every engineer can see what the scanner found on their PR."*
+> all three — SAST, SCA, DAST — is the complete shift-left picture. Findings appear in
+> the GitHub Security tab alongside SAST results — the developer sees everything in one
+> place without downloading artifacts."*
 
 ---
 
@@ -1426,13 +1431,13 @@ Every JD requirement maps to specific files in this repo. Open the file directly
 | GCP: KMS, Cloud Armor, Binary Authorization | Step 11 | `terraform/kms.tf` (90-day rotation, `prevent_destroy`), `terraform/vpc.tf` (Cloud Armor WAF, OWASP rules), `terraform/gke.tf` (`binary_authorization: PROJECT_SINGLETON_POLICY_ENFORCE`) |
 | Local Kubernetes dev tooling (Tilt) | — | `Tiltfile`, `.devcontainer/devcontainer.json`, `.devcontainer/post-create.sh` |
 | Prometheus + Grafana + alerting | Steps 6, 13 | `monitoring/values-kube-prometheus-stack.yaml` (30-day retention), `monitoring/values-loki-stack.yaml` (Loki + Promtail), `monitoring/alert-rules.yaml` (7 PrometheusRules) |
-| Snyk AI scanning | Step 5 | `.github/workflows/ci.yaml` — `snyk` job (lines 33–51), Snyk IaC + DeepCode, SARIF upload to GitHub Security tab |
+| Snyk IaC scanning | Step 5 | `.github/workflows/ci.yaml` — `snyk` job ("Snyk IaC Scan"), Snyk CLI binary, SARIF upload to GitHub Security tab (`category: snyk-iac`) |
 | Trivy multi-scanner | Steps 5, 16A | `.github/workflows/ci.yaml` — `build-scan` job (lines 68–111), `exit-code: "1"` on CRITICAL/HIGH, `cloudbuild.yaml`, `demo/vulnerable/Dockerfile` |
 | Supply chain / Binary Authorization | Steps 12, 16B–C | `.github/workflows/ci.yaml` — `sign` job (lines 113–145), `kyverno/policies/verify-images.yaml`, `.github/workflows/supply-chain.yaml` (SLSA), `demo/unsigned-deploy.yaml` |
 | RabbitMQ async payment flow | Steps 7, 16E | `k8s/rabbitmq/consumer-deployment.yaml`, `k8s/rabbitmq/producer-job.yaml`, `k8s/rabbitmq/values-rabbitmq.yaml` (3-node quorum), `k8s/rabbitmq/pdb.yaml` (minAvailable: 2), `k8s/rabbitmq/networkpolicy.yaml` |
 | Helm — authoring + consuming | Step 2 | `charts/nginx-app/Chart.yaml`, `charts/nginx-app/values.yaml`, `charts/nginx-app/templates/_helpers.tpl`, `charts/nginx-app/templates/deployment.yaml` |
 | Runtime security | Step 10, 16D | Falco installed via `make falco`; `monitoring/alert-rules.yaml` |
-| DAST | Step 14 | `.github/workflows/dast.yaml`, `.zap/rules.tsv` (rule overrides with rationale) |
+| DAST | Step 14 | `.github/workflows/dast.yaml`, `.zap/rules.tsv` (rule overrides with rationale), `dast/scan-target.txt` (SARIF physicalLocation anchor) |
 | Automated dependency updates | — | `.github/dependabot.yml` (weekly PRs: Actions + Docker + pip + Terraform + npm) |
 | Vulnerability disclosure | — | `SECURITY.md` (private disclosure via GitHub Security Advisories) |
 | SAST — dangerous functions (Python + PHP) | Steps 5, 16G | CodeQL → Python findings; Semgrep `p/php` → PHP findings; both upload SARIF to Security tab. `demo/insecure-code/vulnerable_payment.py` + `vulnerable_payment.php` (CWE-89/78/79/22/327/502/798), secure counterparts show remediations |
@@ -1550,7 +1555,7 @@ DSOMM defines four dimensions with increasing maturity levels. This PoC reaches 
 | **Build and Deployment** | Automated dependency updates | Dependabot weekly PRs (`.github/dependabot.yml`) |
 | **Test and Verification** | SAST | CodeQL + Snyk DeepCode AI |
 | **Test and Verification** | SCA / dependency analysis | Snyk + Trivy (CVE database + license scanning) |
-| **Test and Verification** | DAST | OWASP ZAP baseline scan — HTML report as CI artifact + SARIF to Security tab |
+| **Test and Verification** | DAST | OWASP ZAP baseline scan — SARIF to Security tab (`category: zap-baseline`) + HTML artifact; `workflow_dispatch` enables manual re-runs |
 | **Test and Verification** | Infrastructure scanning | Snyk IaC + Trivy misconfig scan (Terraform + K8s manifests) |
 | **Information Gathering** | Centralised log aggregation | Loki + Promtail; 30-day retention (PCI-DSS Req 10) |
 | **Information Gathering** | Metrics and alerting | Prometheus + Grafana + AlertManager; 7 alert rules covering HPA, pods, RabbitMQ |
@@ -1659,7 +1664,7 @@ This PoC demonstrates the same pattern:
 | Google Cloud Build | `cloudbuild.yaml` |
 | SAST | CodeQL (Python) + Semgrep (PHP + Python, `p/php` + `p/python` rulesets) + Snyk DeepCode; all findings in GitHub Security tab |
 | SCA | Snyk + Trivy (CVE + licence scanning) |
-| DAST | OWASP ZAP (`.github/workflows/dast.yaml`, `.zap/rules.tsv`) |
+| DAST | OWASP ZAP (`.github/workflows/dast.yaml`, `.zap/rules.tsv`); SARIF uploaded to GitHub Security tab + HTML artifact |
 | IaC scanning | Trivy misconfig + Snyk IaC (Terraform + K8s manifests) |
 | Secret detection | Trivy FS, GitHub Push Protection, pre-commit gitleaks (`.pre-commit-config.yaml`) |
 | Supply chain integrity | cosign keyless, syft SBOM (SPDX + CycloneDX), SLSA provenance |

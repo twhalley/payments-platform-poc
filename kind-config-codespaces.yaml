@@ -2,11 +2,24 @@
 # Ports 80/443 are omitted: Codespaces uses kubectl port-forward for all access,
 # so ingress host-port bindings are unnecessary and can conflict with the host.
 # Auto-selected by scripts/cluster-setup.sh when CODESPACES=true.
+#
+# Node image pinned to v1.32.3: kind's default (v1.36.x) is too new for the
+# docker-outside-of-docker runtime in Codespaces — the API server doesn't respond
+# fast enough during CNI installation, causing a "connection refused on 6443" failure.
+# v1.32.3 is an LTS-aligned release, well-tested across all common environments.
+#
+# Explicit subnets prevent conflicts with the Codespaces VM Docker bridge
+# (typically 172.18.0.0/16); 10.244/16 and 10.96/12 are kind's own defaults
+# but declaring them explicitly makes the intent clear.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: payments-poc
+networking:
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/12"
 nodes:
   - role: control-plane
+    image: kindest/node:v1.32.3
     kubeadmConfigPatches:
       - |
         kind: InitConfiguration
@@ -14,3 +27,4 @@ nodes:
           kubeletExtraArgs:
             node-labels: "ingress-ready=true"
   - role: worker
+    image: kindest/node:v1.32.3
