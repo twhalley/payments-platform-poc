@@ -1,0 +1,162 @@
+# kube-bench — CIS Kubernetes Benchmark scanner (Job).
+#
+# CIS Kubernetes Benchmark covers what Kyverno and Pod Security Standards cannot:
+# control-plane configuration (API server flags, etcd settings, scheduler config),
+# node-level kubelet settings, and RBAC configuration quality.
+#
+# This runs as a one-shot Job on the control-plane node.
+# kind: runs inside the kind container so all /etc/kubernetes paths are accessible.
+#
+# Run:   make kube-bench
+# Logs:  kubectl logs -n kube-system job/kube-bench --follow
+#
+# PCI-DSS Req 2.2 — develop configuration standards for all system components.
+# ISO 27001 A.8.9  — configuration management.
+# CIS Level 1 = minimum hardening; Level 2 = defense-in-depth (higher disruption risk).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-bench
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: kube-bench
+    managed-by: poc
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-bench
+  labels:
+    app.kubernetes.io/name: kube-bench
+rules:
+  # kube-bench reads cluster state to validate RBAC, NetworkPolicy, and PSS configuration
+  - apiGroups: [""]
+    resources: ["nodes", "pods", "namespaces", "serviceaccounts", "configmaps"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets", "deployments", "replicasets", "statefulsets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
+    verbs: ["get", "list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-bench
+  labels:
+    app.kubernetes.io/name: kube-bench
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-bench
+subjects:
+  - kind: ServiceAccount
+    name: kube-bench
+    namespace: kube-system
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kube-bench
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: kube-bench
+  annotations:
+    # Re-run: kubectl delete job kube-bench -n kube-system && kubectl apply -f this file
+    pci-dss.req: "2.2"
+spec:
+  # TTL: auto-delete Job + pod 1 hour after completion
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-bench
+    spec:
+      serviceAccountName: kube-bench
+      # hostPID: read /proc entries from the host (needed to detect running kubelet flags)
+      hostPID: true
+      restartPolicy: Never
+
+      # Must run on control-plane to access etcd, scheduler, and controller-manager config
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+
+      containers:
+        - name: kube-bench
+          image: docker.io/aquasec/kube-bench:v0.7.3
+          # --targets: run all four node types.
+          # For a focused demo, use: --targets master  or  --targets node
+          # --json: machine-readable output suitable for SIEM ingestion
+          command:
+            - kube-bench
+            - --targets
+            - master,node,etcd,policies
+          env:
+            # Tell kube-bench which config to use (auto-detects Kubernetes version)
+            - name: KUBE_BENCH_LOG_LEVEL
+              value: "warn"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false   # kube-bench writes temp files during scan
+            runAsUser: 0                    # needs root to read /proc/<pid>/cmdline of kubelet
+          volumeMounts:
+            # Control-plane config files (static pod manifests)
+            - name: etc-kubernetes
+              mountPath: /etc/kubernetes
+              readOnly: true
+            # kubelet config + kubeconfig
+            - name: var-lib-kubelet
+              mountPath: /var/lib/kubelet
+              readOnly: true
+            # etcd data directory (existence + permissions check)
+            - name: var-lib-etcd
+              mountPath: /var/lib/etcd
+              readOnly: true
+            # CNI plugin binaries (CIS 4.1.x checks)
+            - name: opt-cni-bin
+              mountPath: /opt/cni/bin
+              readOnly: true
+            # CNI network config
+            - name: etc-cni-netd
+              mountPath: /etc/cni/net.d
+              readOnly: true
+            # Host binaries (kubectl, etc. — path check only)
+            - name: usr-bin
+              mountPath: /usr/local/mount-from-host/bin
+              readOnly: true
+
+      volumes:
+        - name: etc-kubernetes
+          hostPath:
+            path: /etc/kubernetes
+        - name: var-lib-kubelet
+          hostPath:
+            path: /var/lib/kubelet
+        - name: var-lib-etcd
+          hostPath:
+            path: /var/lib/etcd
+        - name: opt-cni-bin
+          hostPath:
+            path: /opt/cni/bin
+        - name: etc-cni-netd
+          hostPath:
+            path: /etc/cni/net.d
+        - name: usr-bin
+          hostPath:
+            path: /usr/bin

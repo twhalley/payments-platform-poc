@@ -1,6 +1,6 @@
 .PHONY: cluster destroy load-test watch argocd prometheus loki alert-rules \
         rabbitmq kyverno istio falco terraform-plan security-scan kyverno-test \
-        verify-supply-chain rbac-audit secrets clean help
+        verify-supply-chain rbac-audit secrets kube-bench clean help
 
 NAMESPACE  := payments-dev
 KUBECONFIG ?= $(HOME)/.kube/config
@@ -32,6 +32,9 @@ help:
 	@echo ""
 	@echo "── Secrets management ──────────────────────────────────────────────────────"
 	@echo "  make secrets           Install ESO + OpenBao, seed demo secrets, apply ExternalSecrets"
+	@echo ""
+	@echo "── Compliance ───────────────────────────────────────────────────────────────"
+	@echo "  make kube-bench        Run CIS Kubernetes Benchmark (requires running cluster)"
 
 # ── Phase 1+2: cluster + nginx ────────────────────────────────────────────────
 cluster:
@@ -296,6 +299,40 @@ secrets:
 	@echo "  ESO status:  kubectl get clustersecretstore"
 	@echo "  In GKE:      swap secret-store.yaml for k8s/secrets/gcp-secret-store.yaml"
 	@echo "               (terraform/secrets.tf provisions the GCP resources)"
+
+# ── CIS Kubernetes Benchmark (kube-bench) ────────────────────────────────────
+# Runs the CIS Benchmark checks that Kyverno + PSS cannot cover:
+#   - API server flags (anonymous auth, audit logging, admission plugins)
+#   - etcd security (peer TLS, client cert auth)
+#   - kubelet settings (read-only port disabled, event QPS, authorization mode)
+#   - RBAC hygiene (cluster-admin bindings, service account token auto-mount)
+#
+# Findings map to:
+#   PCI-DSS Req 2.2 — system hardening configuration standards
+#   ISO 27001 A.8.9 — configuration management
+#
+# NOTE: kind runs Kubernetes inside Docker containers. Some CIS checks will WARN
+# rather than PASS because kind uses a non-standard node layout (no systemd units).
+# These are false positives — explain in interview as "expected in a containerised
+# local cluster; these controls are enforced by GKE Autopilot in production."
+kube-bench:
+	@echo "Applying kube-bench Job..."
+	kubectl apply -f k8s/kube-bench/kube-bench-job.yaml
+	@echo ""
+	@echo "Waiting for kube-bench pod to start..."
+	kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=kube-bench \
+		-n kube-system --timeout=60s 2>/dev/null || true
+	@echo ""
+	@echo "CIS Benchmark results:"
+	kubectl logs -n kube-system job/kube-bench --follow 2>/dev/null || \
+		kubectl logs -n kube-system -l app.kubernetes.io/name=kube-bench --follow
+	@echo ""
+	@echo "── Summary counts:"
+	kubectl logs -n kube-system job/kube-bench 2>/dev/null | \
+		grep -E "^\[PASS\]|^\[FAIL\]|^\[WARN\]|^\[INFO\]" | \
+		awk '{counts[$$1]++} END {for (k in counts) print k, counts[k]}' | sort || true
+	@echo ""
+	@echo "Re-run: kubectl delete job kube-bench -n kube-system && make kube-bench"
 
 # ── Verify supply chain ───────────────────────────────────────────────────────
 # Confirms the latest pushed image carries a valid cosign keyless signature.

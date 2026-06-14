@@ -1,0 +1,74 @@
+# OpenSSF Scorecard — supply chain security health check.
+#
+# Scorecard evaluates 18 automated checks across the repo:
+#   Branch protection, Code review, CI tests, Fuzzing, License,
+#   Maintained, Pinned dependencies, SAST, Security policy, Signed releases,
+#   Token permissions, Vulnerabilities, Dangerous workflow patterns, and more.
+#
+# Results:
+#   - Published to https://scorecard.dev/viewer/?uri=github.com/twhalley/payments-platform-poc
+#   - Uploaded as SARIF → GitHub Security tab (same tab as CodeQL + Trivy)
+#   - Badge in README reflects the live score
+#
+# Scorecard docs: https://github.com/ossf/scorecard-action
+# CIS control: supply chain risk management
+# ISO 27001:   A.5.23 ICT supply chain security
+# NIST CSF:    ID.SC — supply chain risk management
+name: OpenSSF Scorecard
+
+on:
+  # Run on every push to master so the badge stays current
+  push:
+    branches: [master]
+  # Weekly Monday 01:30 UTC — catches dependency drift even without code changes
+  schedule:
+    - cron: '30 1 * * 1'
+  # Re-evaluate whenever branch protection rules change (a Scorecard-specific trigger)
+  branch_protection_rule:
+
+# Scorecard requires read-all at the top level; individual jobs scope down further
+permissions: read-all
+
+jobs:
+  scorecard:
+    name: OpenSSF Scorecard analysis
+    runs-on: ubuntu-latest
+
+    permissions:
+      # Upload SARIF results to GitHub Security tab
+      security-events: write
+      # Required for keyless signing of Scorecard attestation (OIDC)
+      id-token: write
+      # Read repo contents and Actions metadata
+      contents: read
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          # Scorecard needs the full history to evaluate branch protection and commit signing
+          persist-credentials: false
+
+      - name: Run OpenSSF Scorecard
+        uses: ossf/scorecard-action@62b2cac7ed8198b15735ed49ab1e5cf35480ba46  # v2.4.0
+        with:
+          results_file: scorecard-results.sarif
+          results_format: sarif
+          # Publish results publicly at scorecard.dev — enables the badge
+          # Set to false if the repo is private
+          publish_results: true
+
+      - name: Upload Scorecard results as artifact
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: scorecard-sarif
+          path: scorecard-results.sarif
+          retention-days: 30
+
+      - name: Upload Scorecard SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@dd746615b3b9d728a6a37ca2d54609a5bde5e6b4  # v3.28.5
+        with:
+          sarif_file: scorecard-results.sarif
+          # Shown as "tool" label in the Security tab
+          category: openssf-scorecard

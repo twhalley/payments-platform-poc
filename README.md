@@ -1,5 +1,7 @@
 # payments-platform-poc
 
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/twhalley/payments-platform-poc/badge)](https://scorecard.dev/viewer/?uri=github.com/twhalley/payments-platform-poc)
+
 Local-first DevSecOps proof-of-concept for a PCI-DSS payments platform: a GitOps-delivered
 Kubernetes workload with autoscaling, layered security scanning, software-supply-chain
 integrity enforcement, observability, service-mesh mTLS, and infrastructure-as-code
@@ -1308,6 +1310,8 @@ Every JD requirement maps to specific files in this repo. Open the file directly
 | RBAC least-privilege audit | — | `k8s/rbac/rbac.yaml`, `make rbac-audit` (`kubectl auth can-i` for each service account) |
 | Supply chain signature verification | Step 12, 16B | `make verify-supply-chain` (cosign verify + jq proof), `kyverno/policies/verify-images.yaml` |
 | Secrets management (ESO + OpenBao / GCP SM) | Step 17 | `k8s/secrets/openbao-values.yaml`, `k8s/secrets/secret-store.yaml`, `k8s/secrets/external-secret.yaml`, `k8s/secrets/gcp-secret-store.yaml`, `terraform/secrets.tf`, `scripts/seed-secrets.sh` |
+| CIS Kubernetes Benchmark (kube-bench) | `make kube-bench` | `k8s/kube-bench/kube-bench-job.yaml` — PCI-DSS Req 2.2, ISO 27001 A.8.9 |
+| OpenSSF Scorecard | Automatic (push to master + weekly) | `.github/workflows/scorecard.yml` — 18 supply chain health checks, badge in README |
 
 ## Note on scope
 
@@ -1333,13 +1337,14 @@ The shift-left model has five stages. All five are covered end-to-end:
 
 **What's here that most PoCs skip:** keyless supply chain signing with a Kyverno admission
 gate, two-layer policy admission (API server PSS + webhook Kyverno), eBPF runtime detection
-with Falco, DAST in CI, and the full SBOM + SLSA provenance chain.
+with Falco, DAST in CI, full SBOM + SLSA provenance chain, ESO secrets management with a
+GCP Secret Manager production path, CIS Kubernetes Benchmark via kube-bench, and OpenSSF
+Scorecard with a live badge.
 
 **Honest gaps vs. a production deployment:**
-- External Secrets Operator or Vault for secret lifecycle management (K8s Secrets are base64, not encrypted at rest without KMS)
-- OpenSSF Scorecard action for a supply chain health score
-- kube-bench CIS Kubernetes Benchmark scan
-- Penetration test by an independent third party (required for PCI-DSS QSA)
+- Penetration test by an independent third party (required for PCI-DSS QSA engagement)
+- Live GCP deployment (`terraform plan` is validated but `terraform apply` costs money)
+- Full ISMS governance layer for ISO 27001 certification (risk register, SoA, management reviews, internal audits)
 
 ---
 
@@ -1558,8 +1563,8 @@ in an interview, which is better than pretending everything is complete.
 |---|---|---|
 | ~~**External Secrets Operator / Vault**~~ | ✅ Implemented — ESO + OpenBao locally, GCP Secret Manager in production (`k8s/secrets/`, `terraform/secrets.tf`) | Done |
 | **Third-party penetration test** | PCI-DSS Req 11 explicitly requires external pen testing by a QSA. Automated scanning is not a substitute | Engage an accredited QSA firm |
-| **kube-bench (CIS Kubernetes Benchmark)** | CIS benchmarks check control-plane and node configuration settings that Kyverno and PSS don't cover | Add `kube-bench` as a Kubernetes Job in CI |
-| **OpenSSF Scorecard** | Scores the repo's supply chain health (branch protection, code review, pinned dependencies) and publishes a badge | Add `scorecard.yml` GitHub Action |
+| ~~**kube-bench (CIS Kubernetes Benchmark)**~~ | ✅ Implemented — `k8s/kube-bench/kube-bench-job.yaml`, run with `make kube-bench` (ISO 27001 A.8.9, PCI-DSS Req 2.2) | Done |
+| ~~**OpenSSF Scorecard**~~ | ✅ Implemented — `.github/workflows/scorecard.yml`, badge in README, SARIF uploaded to Security tab | Done |
 | **Live GCP deployment** | `terraform plan` is validated but never applied — Binary Authorization, Cloud Armor, and Workload Identity are not exercised against a real cluster | Apply against a real GCP project (adds cost) |
 
 ### What sets this apart from a typical DevOps PoC
@@ -1573,4 +1578,5 @@ Most interview PoCs show one or two of these. This one shows all of them:
 5. **SAST in two languages** — Python and PHP vulnerability demos with CWE annotations, showing the same bug classes in different runtimes
 6. **Three-layer secret defence** — pre-commit hook → GitHub Push Protection → Trivy CI scan (demonstrated live during development)
 7. **Proper secrets management** — ESO + OpenBao locally with identical ExternalSecret manifests swapped for GCP Secret Manager in production via Workload Identity; only the ClusterSecretStore changes
-8. **Framework-mapped controls** — every control maps to NIST CSF, ISO 27001 Annex A, UK Cyber Essentials Plus, OWASP DSOMM, and DoD DevSecOps Reference Design
+8. **CIS Benchmark + OpenSSF Scorecard** — compliance checks that most PoCs skip entirely: kube-bench validates control-plane hardening; Scorecard evaluates 18 supply-chain health dimensions with a public badge
+9. **Framework-mapped controls** — every control maps to NIST CSF, ISO 27001 Annex A, UK Cyber Essentials Plus, OWASP DSOMM, and DoD DevSecOps Reference Design
