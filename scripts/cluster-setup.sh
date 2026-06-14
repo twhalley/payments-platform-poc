@@ -1,22 +1,42 @@
 #!/usr/bin/env bash
-# Bootstrap the local kind cluster and install platform components.
-# Idempotent — safe to re-run. Deletes and recreates the cluster if it already exists.
+# Bootstrap the kind cluster and deploy the core platform.
+# Idempotent — safe to re-run. Deletes and recreates the cluster if it exists.
+#
+# Auto-detects the runtime environment:
+#   GitHub Codespaces → plain kind (Docker via docker-in-docker feature)
+#   Local             → sudo kind with rootful Podman
+#
 # Usage: bash scripts/cluster-setup.sh
+#        make cluster
 set -euo pipefail
 
-export KIND_EXPERIMENTAL_PROVIDER=podman
+# ── Environment detection ──────────────────────────────────────────────────────
+if [[ "${CODESPACES:-}" == "true" ]]; then
+  RUNTIME="GitHub Codespaces (Docker)"
+  KIND_CONFIG="kind-config-codespaces.yaml"
+  # In Codespaces, Docker is available without sudo via docker-in-docker feature
+  run_kind() { kind "$@"; }
+else
+  RUNTIME="local (rootful Podman)"
+  KIND_CONFIG="kind-config.yaml"
+  # Locally, kind uses rootful Podman — see README § Local prerequisites
+  run_kind() { sudo KIND_EXPERIMENTAL_PROVIDER=podman kind "$@"; }
+fi
+
+echo "==> Runtime: $RUNTIME"
+echo "==> Kind config: $KIND_CONFIG"
 
 # ── Cluster ───────────────────────────────────────────────────────────────────
-echo "==> Creating kind cluster (rootful Podman)..."
-if sudo KIND_EXPERIMENTAL_PROVIDER=podman kind get clusters 2>/dev/null | grep -q "^payments-poc$"; then
-  echo "    Cluster already exists, deleting and recreating..."
-  sudo KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name payments-poc
+echo "==> Creating kind cluster..."
+if run_kind get clusters 2>/dev/null | grep -q "^payments-poc$"; then
+  echo "    Cluster already exists — deleting and recreating..."
+  run_kind delete cluster --name payments-poc
 fi
-sudo KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster --config kind-config.yaml
+run_kind create cluster --config "$KIND_CONFIG"
 
 echo "==> Exporting kubeconfig..."
 mkdir -p ~/.kube
-sudo KIND_EXPERIMENTAL_PROVIDER=podman kind get kubeconfig --name payments-poc > ~/.kube/config
+run_kind get kubeconfig --name payments-poc > ~/.kube/config
 chmod 600 ~/.kube/config
 export KUBECONFIG=~/.kube/config
 
@@ -46,9 +66,9 @@ helm upgrade --install nginx-app charts/nginx-app \
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
-echo "✓ Cluster ready."
+echo "Cluster ready. Runtime: $RUNTIME"
 echo ""
 echo "  kubectl get nodes"
 echo "  kubectl get pods,hpa -n payments-dev"
-echo "  kubectl port-forward -n payments-dev svc/dev-nginx-app 8080:80"
-echo "  k6 run -e TARGET_URL=http://localhost:8080 scripts/load-test.js"
+echo "  make watch          # terminal 1"
+echo "  make load-test      # terminal 2 — watch HPA scale out"

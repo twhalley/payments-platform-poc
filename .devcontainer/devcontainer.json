@@ -1,23 +1,54 @@
 {
   "name": "payments-platform-poc",
   "image": "mcr.microsoft.com/devcontainers/base:debian",
+
+  // Minimum machine: 4-core / 8 GB RAM.
+  // The full stack (kind + Istio + Prometheus + RabbitMQ + Kyverno + Loki) needs ~6 GB.
+  // In Codespaces: Code → Codespaces → ... → Change machine type → 4-core.
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb",
+    "storage": "32gb"
+  },
+
   "features": {
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    // Docker daemon inside the devcontainer — kind uses this as the container runtime
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "moby": true,
+      "dockerDashComposeVersion": "none"
+    },
+    // kubectl + helm (minikube excluded — we use kind)
     "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
       "version": "latest",
       "helm": "latest",
       "minikube": "none"
     },
-    "ghcr.io/devcontainers/features/terraform:1": {}
+    // terraform (for make terraform-plan)
+    "ghcr.io/devcontainers/features/terraform:1": {},
+    // Python (for pre-commit and the insecure-code demo files)
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12"
+    }
   },
+
   "postCreateCommand": "bash .devcontainer/post-create.sh",
-  "forwardPorts": [8080, 3000, 8443, 15672],
+
+  // All ports used by the demo — Codespaces auto-forwards these
+  "forwardPorts": [
+    8080,   // nginx (kubectl port-forward)
+    3000,   // Grafana
+    8443,   // ArgoCD
+    15672,  // RabbitMQ management UI
+    9090    // Prometheus
+  ],
   "portsAttributes": {
-    "8080": { "label": "nginx" },
-    "3000": { "label": "Grafana" },
-    "8443": { "label": "ArgoCD" },
-    "15672": { "label": "RabbitMQ" }
+    "8080":  { "label": "nginx",             "onAutoForward": "notify" },
+    "3000":  { "label": "Grafana",           "onAutoForward": "openBrowser" },
+    "8443":  { "label": "ArgoCD",            "onAutoForward": "notify" },
+    "15672": { "label": "RabbitMQ",          "onAutoForward": "notify" },
+    "9090":  { "label": "Prometheus",        "onAutoForward": "notify" }
   },
+
   "customizations": {
     "vscode": {
       "extensions": [
@@ -25,8 +56,14 @@
         "hashicorp.terraform",
         "redhat.vscode-yaml",
         "ms-azuretools.vscode-docker",
-        "github.vscode-github-actions"
-      ]
+        "github.vscode-github-actions",
+        "ms-python.python",
+        "timonwong.shellcheck"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "editor.formatOnSave": true
+      }
     }
   }
 }

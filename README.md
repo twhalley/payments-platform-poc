@@ -36,23 +36,84 @@ mirroring a GCP/GKE production target.
 
 ---
 
-## Run anywhere — GitHub Codespaces
+## Run anywhere — GitHub Codespaces (recommended)
 
-The fastest way to run this on any machine is GitHub Codespaces. No local installs needed.
+Codespaces is the primary demo path — no local installs, no Podman/Docker setup, no
+"works on my machine" issues. The DevContainer configures everything automatically.
+
+### Step 1 — Launch with the right machine size
+
+The full stack (kind + Istio + Prometheus + RabbitMQ + Kyverno + Loki) needs ~6 GB RAM.
 
 1. Open the repo on GitHub
-2. Click **Code → Codespaces → Create codespace on master**
-3. Wait ~2 minutes for the DevContainer to build (installs kind, k6, cosign, syft automatically)
-4. In the Codespaces terminal: `make cluster`
+2. Click **Code → Codespaces → New with options...**
+3. Set **Machine type: 4-core** (8 GB RAM, 32 GB storage)
+4. Click **Create codespace**
 
-Port forwards (8080, 3000, 8443, 15672) are auto-configured in `.devcontainer/devcontainer.json`.
+> The 2-core free tier will run out of memory when Istio and Prometheus are both running.
+> 4-core is the minimum for the full stack.
+
+### Step 2 — Wait for the DevContainer to build (~3 minutes)
+
+The `post-create.sh` script runs automatically and installs:
+
+| Tool | Version | Used by |
+|---|---|---|
+| kind | v0.30.0 | Kubernetes cluster |
+| k6 | v2.0.0 | HPA load test |
+| cosign | v2.2.4 | Supply chain signing |
+| syft | latest | SBOM generation |
+| grype | latest | SBOM CVE querying |
+| Trivy | v0.51.0 | `make security-scan` |
+| Kyverno CLI | v1.12.0 | `make kyverno-test` |
+| pre-commit | latest | Installed and active |
+
+kubectl and helm are installed by the devcontainer feature. terraform is also available.
+
+### Step 3 — Run the demo
+
+```bash
+# Security demos — no cluster needed, run immediately:
+make security-scan     # Trivy: secrets + IaC misconfigs + image comparison + SBOM
+make kyverno-test      # Policy unit tests — 6 assertions, 3 pass 3 fail
+
+# Full platform:
+make cluster           # ~2 min — boots kind cluster, deploys nginx (Kustomize + Helm)
+make all               # ~10 min — deploys every component in order
+```
+
+### Step 4 — Access the UIs
+
+Port forwards are auto-configured. Click the **Ports** tab in Codespaces (bottom panel):
+
+| Port | Service | Credentials |
+|---|---|---|
+| 8080 | nginx | — |
+| 3000 | Grafana | admin / poc-admin |
+| 8443 | ArgoCD | admin / (see `make argocd` output) |
+| 15672 | RabbitMQ management | payments / poc-change-me |
+| 9090 | Prometheus | — |
+
+### What works and what doesn't in Codespaces
+
+| Component | Status | Notes |
+|---|---|---|
+| kind cluster, HPA, Kustomize, Helm | ✅ Works | Core demo |
+| ArgoCD, Prometheus, Grafana, Loki | ✅ Works | Full observability |
+| RabbitMQ, producer/consumer | ✅ Works | Async payment flow |
+| Kyverno admission policies | ✅ Works | Including A/B admission demo |
+| Istio mTLS | ✅ Works | May be slow to start on 4-core |
+| `make security-scan`, `kyverno-test` | ✅ Works | No cluster needed |
+| Terraform plan | ✅ Works | No cloud spend |
+| Falco modern_ebpf | ⚠️ Skipped | eBPF needs direct kernel access — not available inside a container. `make falco` prints a graceful explanation and points to the README walkthrough instead. |
 
 > *"I set up a DevContainer so any engineer on the team can clone this and have the full
-> stack running in a Codespace in under 5 minutes — no 'works on my machine' problems."*
+> stack running in a Codespace in under 5 minutes — no 'works on my machine' issues,
+> no tool installation, and the port forwards are pre-wired so the UIs open immediately."*
 
 ---
 
-## Local prerequisites (Debian/Ubuntu — skip if using Codespaces)
+## Local prerequisites (Debian/Ubuntu — skip if using Codespaces above)
 
 ### 1. Install tools
 

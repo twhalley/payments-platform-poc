@@ -35,7 +35,11 @@ cluster:
 	bash scripts/cluster-setup.sh
 
 destroy:
-	sudo KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name payments-poc
+	@if [ "$${CODESPACES:-}" = "true" ]; then \
+		kind delete cluster --name payments-poc; \
+	else \
+		sudo KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name payments-poc; \
+	fi
 
 # ── HPA demo ──────────────────────────────────────────────────────────────────
 watch:
@@ -141,26 +145,44 @@ alert-rules:
 	@echo "Alert rules applied. View in Grafana → Alerting → Alert rules"
 
 # ── Phase 12: Falco runtime security ──────────────────────────────────────────
+# NOTE: Falco modern_ebpf requires host kernel BPF access.
+# It works on local bare-metal/VM but NOT inside GitHub Codespaces (nested container).
+# In Codespaces, explain it via the README Step 10 walkthrough and securityContext hardening.
 falco:
-	helm repo add falcosecurity https://falcosecurity.github.io/charts --force-update 2>/dev/null
-	helm upgrade --install falco falcosecurity/falco \
-		--namespace falco --create-namespace \
-		--set driver.kind=modern_ebpf \
-		--set falco.grpc.enabled=true \
-		--set falco.grpcOutput.enabled=true \
-		--wait
-	@echo ""
-	@echo "Falco ready. Watch runtime alerts:"
-	@echo "  kubectl logs -n falco -l app.kubernetes.io/name=falco -f"
+	@if [ "$${CODESPACES:-}" = "true" ]; then \
+		echo ""; \
+		echo "Falco skipped: modern_ebpf requires direct kernel access (not available in Codespaces)."; \
+		echo ""; \
+		echo "For the interview, explain Falco via:"; \
+		echo "  - README Step 10: what Falco detects and how (shell spawn, /etc writes, IMDS probe)"; \
+		echo "  - k8s/base/deployment.yaml securityContext: what Kyverno + PSS prevent at admission"; \
+		echo "  - monitoring/alert-rules.yaml: what AlertManager fires on at runtime"; \
+		echo "  These together cover prevention (Kyverno/PSS) + detection (Falco) + alerting (AlertManager)"; \
+	else \
+		helm repo add falcosecurity https://falcosecurity.github.io/charts --force-update 2>/dev/null; \
+		helm upgrade --install falco falcosecurity/falco \
+			--namespace falco --create-namespace \
+			--set driver.kind=modern_ebpf \
+			--set falco.grpc.enabled=true \
+			--set falco.grpcOutput.enabled=true \
+			--wait; \
+		echo ""; \
+		echo "Falco ready. Watch runtime alerts:"; \
+		echo "  kubectl logs -n falco -l app.kubernetes.io/name=falco -f"; \
+	fi
 
 # ── Phase 6: Terraform plan (no cloud spend) ──────────────────────────────────
 terraform-plan:
 	cd terraform && terraform init -upgrade && terraform plan -var-file=../example.tfvars
 
 # ── Run everything ─────────────────────────────────────────────────────────────
+# Falco is attempted last — it prints a friendly skip message in Codespaces
+# rather than failing the whole target.
 all: cluster argocd prometheus loki alert-rules rabbitmq kyverno istio falco
 	@echo ""
-	@echo "Full stack deployed. Run 'make load-test' in one terminal and 'make watch' in another."
+	@echo "Full stack deployed."
+	@echo "Terminal 1: make watch"
+	@echo "Terminal 2: make load-test"
 
 # ── Security scan (local — no cluster required) ────────────────────────────────
 # Runs four Trivy scan modes plus the vulnerable/hardened image comparison.
