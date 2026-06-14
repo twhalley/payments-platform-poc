@@ -1,0 +1,5 @@
+# CODEOWNERS — every PR requires review from the repo owner.
+# GitHub enforces this via branch protection (require_code_owner_reviews).
+# Checked by OpenSSF Scorecard under the "Code-Review" check.
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+* @twhalley

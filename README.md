@@ -215,7 +215,8 @@ the `terraform/gke.tf` approach already provisioned in this repo.
 
 1. Add `SNYK_TOKEN` secret (above)
 2. Enable CodeQL — GitHub repo → Security → Code scanning → Set up → Advanced
-3. Push a commit to `master` or open a PR — the Actions tab shows the pipeline running
+3. Set up branch protection (see below)
+4. Push a commit to `master` or open a PR — the Actions tab shows the pipeline running
 
 **Every PR runs:** lint → Snyk → CodeQL → Trivy image scan (fails on CRITICAL/HIGH)
 
@@ -224,6 +225,90 @@ the `terraform/gke.tf` approach already provisioned in this repo.
 > *"The pipeline is pinned — `snyk/actions/iac@1.1.2`, `trivy-action@0.24.0` — not `@master`.
 > Mutable refs are a supply chain attack vector: the action could change between runs.
 > Pinning to a version means what ran yesterday runs the same way today."*
+
+---
+
+## Branch protection — master
+
+Branch protection enforces the principle that **no code reaches production without passing
+all security gates**. It maps directly to:
+
+- PCI-DSS Req 6.5 — all changes reviewed and tested before deployment
+- ISO 27001 A.8.4 — access to source code is controlled
+- OpenSSF Scorecard "Branch-Protection" and "Code-Review" checks
+
+### Rules applied to `master`
+
+| Rule | Setting | Why |
+|---|---|---|
+| Require pull request | ✅ Enabled | No direct pushes — all changes via PR |
+| Required approving reviews | 1 | Peer review before merge (Code-Review check) |
+| Dismiss stale reviews | ✅ Enabled | New commits invalidate existing approval |
+| Require status checks to pass | ✅ Enabled | CI gate must be green before merge |
+| Require branches to be up to date | ✅ Enabled | PR must include latest master before merge |
+| Required checks | `Lint Kustomize + Helm`, `Snyk Scan (code + IaC)`, `CodeQL Analysis`, `Build Image + Trivy Scan` | All four pre-merge jobs |
+| Require conversation resolution | ✅ Enabled | No unresolved review comments at merge |
+| Allow force pushes | ❌ Disabled | Prevents history rewriting on master |
+| Allow deletions | ❌ Disabled | Master cannot be deleted |
+
+> `sign` and `deploy` jobs are excluded from required checks — they only run
+> after merge (they are gated with `if: github.event_name != 'pull_request'`).
+
+### Apply via GitHub CLI (run once in Codespaces — `gh` is pre-authenticated)
+
+```bash
+gh api \
+  --method PUT \
+  -H "Accept: application/vnd.github+json" \
+  /repos/twhalley/payments-platform-poc/branches/master/protection \
+  --input - <<'EOF'
+{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": [
+      "Lint Kustomize + Helm",
+      "Snyk Scan (code + IaC)",
+      "CodeQL Analysis",
+      "Build Image + Trivy Scan"
+    ]
+  },
+  "enforce_admins": false,
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": true,
+    "required_approving_review_count": 1
+  },
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "required_conversation_resolution": true
+}
+EOF
+```
+
+`enforce_admins: false` means you (the repo owner) can bypass the rules when needed
+for the demo. Set to `true` in a real team environment.
+
+### Or apply via GitHub UI
+
+1. Repo → **Settings → Branches → Add branch protection rule**
+2. **Branch name pattern:** `master`
+3. Tick **Require a pull request before merging** → set **Required approving reviews: 1**
+4. Tick **Dismiss stale pull request approvals when new commits are pushed**
+5. Tick **Require status checks to pass before merging** → tick **Require branches to be up to date**
+6. Search and add each required check: `Lint Kustomize + Helm`, `Snyk Scan (code + IaC)`, `CodeQL Analysis`, `Build Image + Trivy Scan`
+7. Tick **Require conversation resolution before merging**
+8. Tick **Do not allow force pushes** and **Do not allow deletions**
+9. Click **Create**
+
+> Status checks only appear in the search box after they have run at least once.
+> If the list is empty, push a commit to a branch and open a PR first, then return here.
+
+### CODEOWNERS
+
+[`CODEOWNERS`](CODEOWNERS) requires `@twhalley` to review every PR — enforced
+automatically when **Require review from Code Owners** is enabled in branch protection.
+This satisfies the OpenSSF Scorecard "Code-Review" check.
 
 ---
 
