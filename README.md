@@ -610,3 +610,193 @@ development environments working so engineers can run the full stack on their ma
 and names Tilt. Cloud IaC (`terraform/`) is real and `terraform plan`-validated against
 GKE; demonstrated without live cloud spend. Open in GitHub Codespaces to run with zero
 local setup.
+
+---
+
+## DevSecOps coverage — is everything here?
+
+The shift-left model has five stages. All five are covered end-to-end:
+
+| Stage | Controls |
+|---|---|
+| **Code** | CodeQL SAST + Copilot Autofix suggestions on PR diffs; Snyk DeepCode AI; signed commits (GPG Ed25519) |
+| **Build** | Trivy (CVE + secrets + misconfigs); Snyk IaC scan; container build hardened from `nginx-unprivileged` |
+| **Package** | cosign keyless signing (GitHub OIDC, no long-lived keys); syft SBOM (SPDX + CycloneDX) as OCI attestation; SLSA provenance |
+| **Deploy** | ArgoCD GitOps (audit trail, selfHeal); Kyverno + PSS two-gate admission; Kyverno verifyImages blocks unsigned images; RBAC |
+| **Run** | Falco eBPF runtime detection; Istio mTLS STRICT + AuthorizationPolicy; NetworkPolicy default-deny; OWASP ZAP DAST (every push + weekly); PLG observability; AlertManager rules |
+
+**What's here that most PoCs skip:** keyless supply chain signing with a Kyverno admission
+gate, two-layer policy admission (API server PSS + webhook Kyverno), eBPF runtime detection
+with Falco, DAST in CI, and the full SBOM + SLSA provenance chain.
+
+**Honest gaps vs. a production deployment:**
+- External Secrets Operator or Vault for secret lifecycle management (K8s Secrets are base64, not encrypted at rest without KMS)
+- OpenSSF Scorecard action for a supply chain health score
+- kube-bench CIS Kubernetes Benchmark scan
+- Penetration test by an independent third party (required for PCI-DSS QSA)
+
+---
+
+## DevSecOps framework alignment
+
+Every control in this PoC maps to at least one recognised framework. This section shows
+the mapping — useful for demonstrating that the practices here are not ad hoc.
+
+---
+
+### NIST Cybersecurity Framework 2.0
+
+| Function | Controls in this PoC |
+|---|---|
+| **Govern** | PCI-DSS requirements mapped in `docs/pci-dss-mapping.md`; RBAC policies in `k8s/rbac/rbac.yaml`; ArgoCD signed Git commits as immutable change log |
+| **Identify** | syft SBOM (software asset inventory); Terraform IaC (infrastructure asset register); Trivy secret scan (credential exposure detection); `SECURITY.md` vulnerability disclosure policy |
+| **Protect** | Kyverno + PSS (policy enforcement at two independent gates); NetworkPolicy default-deny; Istio mTLS STRICT (encryption in transit); KMS 90-day key rotation (encryption at rest); Workload Identity (no long-lived GCP credentials); cosign keyless signing + Kyverno admission gate (supply chain integrity) |
+| **Detect** | Prometheus + Grafana (metrics-based anomaly detection); Loki + Promtail (30-day log retention); Falco eBPF (runtime syscall threat detection); AlertManager PrometheusRules (automated alerting) |
+| **Respond** | ArgoCD `selfHeal` (automated configuration drift recovery); AlertManager routing (incident notification); RabbitMQ dead-letter queue (payment event failure capture and replay) |
+| **Recover** | PodDisruptionBudget `minAvailable: 1` (service survives node drain); HPA (automatic capacity recovery under load); RabbitMQ PDB `minAvailable: 2` (quorum resilience); rolling update strategy (zero-downtime deployment) |
+
+---
+
+### ISO 27001:2022 — Annex A control mapping
+
+| Control | Implementation |
+|---|---|
+| **A.5.7** Threat intelligence | Trivy CVE feed + Snyk advisory database; Falco community rule library |
+| **A.5.23** ICT supply chain security | cosign keyless signing + SLSA provenance; Kyverno `verifyImages` admission gate; action versions pinned (not `@master`) |
+| **A.5.36** Compliance with policies | Kyverno ClusterPolicies as machine-readable, version-controlled policy |
+| **A.8.4** Access to source code | Branch protection on `master`; ArgoCD RBAC; `k8s/rbac/rbac.yaml` |
+| **A.8.8** Technical vulnerability management | Trivy (container + IaC) + Snyk + CodeQL in CI gate; Dependabot weekly automated PRs |
+| **A.8.9** Configuration management | Kustomize overlays (declarative diff-based); Helm versioned releases; Terraform state |
+| **A.8.15** Logging | Loki + Promtail (30-day retention); Prometheus metrics (30-day retention); ArgoCD audit log |
+| **A.8.16** Monitoring activities | Grafana dashboards; AlertManager PrometheusRules; Falco runtime event stream |
+| **A.8.20** Network security | NetworkPolicy default-deny-all + explicit allow; GKE private cluster (Terraform); VPC private subnets |
+| **A.8.21** Security of network services | Istio mTLS STRICT (mutual certificate auth); Cloud Armor WAF OWASP rule set (Terraform) |
+| **A.8.24** Cryptography | KMS envelope encryption; TLS enforced at Istio sidecar; 90-day key rotation (`terraform/kms.tf`); `prevent_destroy` lifecycle guard |
+| **A.8.25** Secure development lifecycle | Full CI pipeline: lint → SAST → SCA → DAST → sign → GitOps deploy |
+| **A.8.28** Secure coding | CodeQL SAST + Copilot Autofix; Snyk DeepCode AI; Trivy misconfig scan |
+| **A.8.29** Security testing in dev and acceptance | Trivy image scan (every build); OWASP ZAP DAST (every push to master + weekly cron) |
+
+---
+
+### UK Cyber Essentials Plus — five technical controls
+
+Cyber Essentials Plus is the UK government's baseline cyber security certification scheme
+(NCSC). The five controls and their implementation:
+
+| Control | Implementation |
+|---|---|
+| **Firewalls** | NetworkPolicy default-deny-all + explicit namespaced ingress allow (`k8s/base/networkpolicy.yaml`); Cloud Armor WAF with OWASP managed rule set (`terraform/vpc.tf`) |
+| **Secure Configuration** | Kyverno policies (non-root, no-privileged, resource limits required); Pod Security Standards `restricted` profile; `securityContext` hardening (`runAsNonRoot`, `readOnlyRootFilesystem`, `capabilities: drop: ALL`, `seccompProfile: RuntimeDefault`) |
+| **User Access Control** | RBAC with least-privilege roles (`k8s/rbac/rbac.yaml`); Workload Identity (no key-based GCP service account credentials); Istio `AuthorizationPolicy` (identity-based, not network-location-based) |
+| **Malware Protection** | Falco eBPF behavioural detection (shell spawning, file writes, network scans); Trivy + Snyk image scanning for known-malicious packages; Kyverno blocks unsigned images |
+| **Patch Management** | Trivy scans for CVEs on every CI run; Dependabot automated weekly PRs for GitHub Actions + Docker + pip + Terraform + npm; GKE managed node auto-upgrades (Terraform); image tags pinned to digests in production |
+
+---
+
+### OWASP DevSecOps Maturity Model (DSOMM)
+
+DSOMM defines four dimensions with increasing maturity levels. This PoC reaches Level 3
+("defined") across all dimensions:
+
+| Dimension | Practice | Implementation |
+|---|---|---|
+| **Culture and Organisation** | Security findings surfaced in developer workflow | GitHub Security tab: SARIF upload from ZAP, Trivy, CodeQL — findings appear inline on PRs |
+| **Culture and Organisation** | Vulnerability disclosure policy | `SECURITY.md` (private disclosure via GitHub Security Advisories) |
+| **Build and Deployment** | Security integrated into CI | lint → Snyk → CodeQL → Trivy → cosign → deploy; build fails on CRITICAL/HIGH |
+| **Build and Deployment** | Signed artefacts | cosign keyless (GitHub OIDC); SBOM as OCI attestation; SLSA provenance |
+| **Build and Deployment** | Admission gate for signed images | Kyverno `verifyImages` — unsigned images blocked at deploy time |
+| **Build and Deployment** | Automated dependency updates | Dependabot weekly PRs (`.github/dependabot.yml`) |
+| **Test and Verification** | SAST | CodeQL + Snyk DeepCode AI |
+| **Test and Verification** | SCA / dependency analysis | Snyk + Trivy (CVE database + license scanning) |
+| **Test and Verification** | DAST | OWASP ZAP baseline scan — HTML report as CI artifact + SARIF to Security tab |
+| **Test and Verification** | Infrastructure scanning | Snyk IaC + Trivy misconfig scan (Terraform + K8s manifests) |
+| **Information Gathering** | Centralised log aggregation | Loki + Promtail; 30-day retention (PCI-DSS Req 10) |
+| **Information Gathering** | Metrics and alerting | Prometheus + Grafana + AlertManager; 7 alert rules covering HPA, pods, RabbitMQ |
+| **Information Gathering** | Runtime threat detection | Falco modern\_ebpf driver; syscall-level detection with gRPC event stream |
+
+---
+
+### DoD DevSecOps Reference Design
+
+The DoD DevSecOps Reference Design (v2.0) defines the "Continuous ATO" model — security
+evidence is generated continuously by the pipeline rather than at a point-in-time audit.
+This PoC demonstrates the same pattern:
+
+| DoD Pattern | This PoC |
+|---|---|
+| Hardened container image | `nginxinc/nginx-unprivileged:1.27-alpine` + full `securityContext` hardening |
+| Artefact signing + SBOM | cosign keyless + syft SPDX/CycloneDX + SLSA provenance |
+| Policy as Code | Kyverno ClusterPolicies + Pod Security Standards (two independent gates) |
+| Zero-trust networking | Istio mTLS STRICT + NetworkPolicy default-deny + `AuthorizationPolicy` |
+| Continuous monitoring | Falco eBPF + Prometheus + Loki + AlertManager |
+| GitOps audit trail | ArgoCD + GPG-signed commits (Ed25519 key) |
+| IaC with Binary Authorization | Terraform GKE + `binary_authorization: PROJECT_SINGLETON_POLICY_ENFORCE` |
+
+---
+
+## Acronym appendix
+
+| Acronym | Meaning |
+|---|---|
+| ACK | Acknowledgement (AMQP message confirmation pattern) |
+| AMQP | Advanced Message Queuing Protocol |
+| API | Application Programming Interface |
+| ATO | Authority to Operate (DoD continuous security authorisation model) |
+| CE+ | Cyber Essentials Plus (UK NCSC certification scheme) |
+| CI/CD | Continuous Integration / Continuous Delivery |
+| CIDR | Classless Inter-Domain Routing |
+| CIS | Center for Internet Security |
+| CodeQL | Code Query Language (GitHub SAST engine) |
+| CRD | Custom Resource Definition |
+| CSF | Cybersecurity Framework (NIST) |
+| CVE | Common Vulnerabilities and Exposures |
+| DAST | Dynamic Application Security Testing |
+| DLQ | Dead-Letter Queue |
+| DNS | Domain Name System |
+| DoD | Department of Defense (US) |
+| DSOMM | DevSecOps Maturity Model (OWASP) |
+| eBPF | Extended Berkeley Packet Filter (Linux kernel observability technology) |
+| GCP | Google Cloud Platform |
+| GHCR | GitHub Container Registry |
+| GKE | Google Kubernetes Engine |
+| GitOps | Git-based Operations (declarative cluster state managed from a Git source of truth) |
+| GPG | GNU Privacy Guard |
+| HA | High Availability |
+| HPA | Horizontal Pod Autoscaler |
+| HTTP | Hypertext Transfer Protocol |
+| HTTPS | HTTP Secure |
+| IAM | Identity and Access Management |
+| IaC | Infrastructure as Code |
+| ISMS | Information Security Management System (ISO 27001 scope) |
+| JSON | JavaScript Object Notation |
+| kind | Kubernetes in Docker (local cluster tool) |
+| KMS | Key Management Service |
+| K8s | Kubernetes |
+| LogQL | Loki Query Language |
+| mTLS | Mutual Transport Layer Security |
+| NCSC | National Cyber Security Centre (UK) |
+| NIST | National Institute of Standards and Technology (US) |
+| OCI | Open Container Initiative |
+| OIDC | OpenID Connect |
+| OWASP | Open Web Application Security Project |
+| PCI-DSS | Payment Card Industry Data Security Standard |
+| PDB | PodDisruptionBudget |
+| PKI | Public Key Infrastructure |
+| PLG | Prometheus + Loki + Grafana (observability stack) |
+| PoC | Proof of Concept |
+| PSS | Pod Security Standards |
+| QSA | Qualified Security Assessor (PCI-DSS auditor) |
+| RBAC | Role-Based Access Control |
+| SARIF | Static Analysis Results Interchange Format |
+| SBOM | Software Bill of Materials |
+| SCA | Software Composition Analysis |
+| SLSA | Supply-chain Levels for Software Artifacts |
+| SAST | Static Application Security Testing |
+| SOC | Security Operations Centre |
+| SPDX | Software Package Data Exchange |
+| TLS | Transport Layer Security |
+| VPC | Virtual Private Cloud |
+| VU | Virtual User (k6 load test concurrency unit) |
+| WAF | Web Application Firewall |
+| YAML | YAML Ain't Markup Language |
+| ZAP | Zed Attack Proxy (OWASP DAST tool) |
