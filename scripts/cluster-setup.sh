@@ -64,12 +64,19 @@ for ns in payments-dev payments-helm payments-prod monitoring argocd; do
 done
 
 # ── metrics-server (required for HPA) ─────────────────────────────────────────
-echo "==> Installing metrics-server..."
-helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/ --force-update 2>/dev/null
-helm upgrade --install metrics-server metrics-server/metrics-server \
-  --namespace kube-system \
-  --set args[0]="--kubelet-insecure-tls" \
-  --wait
+# k3s (used in Codespaces via k3d) bundles metrics-server as a built-in
+# component — Helm can't adopt the existing resources. Only install on local
+# kind clusters where it isn't pre-installed.
+if [[ "${CODESPACES:-}" != "true" ]]; then
+  echo "==> Installing metrics-server..."
+  helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/ --force-update 2>/dev/null
+  helm upgrade --install metrics-server metrics-server/metrics-server \
+    --namespace kube-system \
+    --set args[0]="--kubelet-insecure-tls" \
+    --wait
+else
+  echo "==> Skipping metrics-server (k3s built-in)..."
+fi
 
 # ── nginx via Kustomize ────────────────────────────────────────────────────────
 echo "==> Deploying nginx via Kustomize (dev overlay)..."
