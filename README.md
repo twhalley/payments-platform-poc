@@ -75,7 +75,7 @@ The `post-create.sh` script runs automatically and installs:
 
 kubectl and helm are installed by the devcontainer feature. terraform is also available.
 
-> **Docker in Codespaces:** the DevContainer uses `docker-outside-of-docker` (mounts the Codespace VM's Docker socket) rather than `docker-in-docker`. DinD requires privileged mode which Codespaces prebuilds don't support; DooD works transparently — `kind` creates cluster nodes on the host daemon exactly as it would with DinD. `moby: false` is set in [`.devcontainer/devcontainer.json`](.devcontainer/devcontainer.json) because `base:debian` now resolves to Debian trixie (13) where `moby-cli` packages are not yet available; Docker CE CLI is used instead.
+> **Docker in Codespaces:** the DevContainer uses `docker-in-docker` (DinD) with `"runArgs": ["--privileged"]`. DooD (docker-outside-of-docker) was tried first but the Codespace host daemon's security profile prevents kind's kubelet from starting — port 6443 never opens and CNI installation fails. DinD runs a dedicated Docker daemon inside the devcontainer, giving kind node containers the cgroup access kubeadm/kubelet require. Codespaces prebuilds support privileged mode. `moby: false` is set because `base:debian` resolves to Debian trixie (13) where `moby-cli` packages are not available; Docker CE is used instead.
 
 ### Step 3 — Run the demo
 
@@ -105,7 +105,7 @@ Port forwards are auto-configured. Click the **Ports** tab in Codespaces (bottom
 
 | Component | Status | Notes |
 |---|---|---|
-| kind cluster, HPA, Kustomize, Helm | ✅ Works | Core demo — uses `kindest/node:v1.32.3` (pinned in `kind-config-codespaces.yaml`; see note below) |
+| kind cluster, HPA, Kustomize, Helm | ✅ Works | Core demo — requires DinD (see devcontainer.json); `kindest/node:v1.32.3` pinned |
 | ArgoCD, Prometheus, Grafana, Loki | ✅ Works | Full observability |
 | RabbitMQ, producer/consumer | ✅ Works | Async payment flow |
 | Kyverno admission policies | ✅ Works | Including A/B admission demo |
@@ -114,7 +114,7 @@ Port forwards are auto-configured. Click the **Ports** tab in Codespaces (bottom
 | Terraform plan | ✅ Works | No cloud spend |
 | Falco modern_ebpf | ⚠️ Skipped | eBPF needs direct kernel access — not available inside a container. `make falco` prints a graceful explanation and points to the README walkthrough instead. |
 
-> **kind node image:** `kind-config-codespaces.yaml` pins `kindest/node:v1.32.3`. The default image that ships with kind v0.32+ (v1.36.x) causes a `connection refused on 6443` failure during CNI installation in the docker-outside-of-docker environment — the API server isn't ready fast enough. v1.32.3 is the stable pinned baseline; update the image field here if you need a specific Kubernetes version.
+> **kind node image:** `kind-config-codespaces.yaml` pins `kindest/node:v1.32.3`. The default image that ships with kind v0.32+ (v1.36.x) causes a `connection refused on 6443` failure during CNI installation. v1.32.3 is the stable pinned baseline; update the image field here if you need a specific Kubernetes version.
 
 ### GitHub Actions in Codespaces
 

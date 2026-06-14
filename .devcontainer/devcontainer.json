@@ -11,14 +11,20 @@
     "storage": "32gb"
   },
 
+  // --privileged is required by docker-in-docker so the inner Docker daemon
+  // can manage cgroups and run kind node containers with the elevated privileges
+  // kubeadm/kubelet need. Codespaces prebuilds support privileged mode.
+  "runArgs": ["--privileged"],
+
   "features": {
-    // docker-outside-of-docker mounts the Codespace VM's Docker socket.
-    // docker-in-docker requires privileged mode which Codespaces prebuilds
-    // don't support — DooD is the correct approach here.
-    // kind creates cluster nodes as containers on the host daemon, so it works.
+    // docker-in-docker runs a dedicated Docker daemon inside the devcontainer.
+    // DooD (docker-outside-of-docker) was tried first but the Codespace host
+    // daemon's security profile prevents kind's kubelet from starting — the API
+    // server never opens port 6443, so CNI installation fails with
+    // "connection refused". DinD gives kind containers full cgroup access.
     // moby:false — the base:debian image now resolves to Debian trixie (13),
-    // where moby-cli packages are not yet available; use Docker CE CLI instead.
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+    // where moby-cli packages are not yet available; use Docker CE instead.
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
       "moby": false
     },
     // kubectl + helm (minikube excluded — we use kind)
