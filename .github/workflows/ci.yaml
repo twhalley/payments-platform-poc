@@ -12,6 +12,11 @@ permissions:
   security-events: write   # upload SARIF to GitHub Security
   id-token: write          # cosign keyless signing via OIDC
 
+# Opt into Node.js 24 runtime ahead of the June 16 2026 forced migration.
+# actions/checkout v4 still declares node20 in action.yml but is compatible.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   # ── 1. Lint manifests ────────────────────────────────────────────────────────
   lint:
