@@ -36,37 +36,38 @@ jobs:
 
   # ── 2. Snyk — AI-powered vulnerability + IaC scanning ───────────────────────
   snyk:
-    name: Snyk Scan (code + IaC)
+    name: Snyk IaC Scan
     runs-on: ubuntu-latest
     needs: lint
+    permissions:
+      security-events: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
-      - name: Check SNYK_TOKEN
-        id: token
-        run: echo "present=${{ secrets.SNYK_TOKEN != '' }}" >> $GITHUB_OUTPUT
+      - name: Install Snyk CLI
+        run: |
+          curl -fsSL https://static.snyk.io/cli/stable/snyk-linux -o /tmp/snyk
+          sudo install -m 0755 /tmp/snyk /usr/local/bin/snyk
 
       - name: Snyk IaC scan (Terraform + K8s manifests)
-        if: steps.token.outputs.present == 'true'
-        uses: snyk/actions/iac@9adf32b1121593767fc3c057af55b55db032dc04  # v1.0.0
-        continue-on-error: true   # findings reported to Security tab; don't block CI gate
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          # --severity-threshold=high: only flag HIGH+ findings
-          # --report omitted: requires Snyk org-level token; SARIF upload covers the same need
-          args: --severity-threshold=high
+        run: |
+          if [ -z "${SNYK_TOKEN}" ]; then
+            echo "::notice::SNYK_TOKEN not set — add it in Settings → Secrets → Actions to enable Snyk IaC scanning."
+            exit 0
+          fi
+          snyk iac test \
+            --severity-threshold=high \
+            --sarif-file-output=snyk.sarif \
+            . 2>&1 || true
 
       - name: Upload Snyk results to GitHub Security
-        if: steps.token.outputs.present == 'true' && hashFiles('snyk.sarif') != ''
+        if: hashFiles('snyk.sarif') != ''
         uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e  # v4.36.2
         with:
           sarif_file: snyk.sarif
           category: snyk-iac
-
-      - name: Snyk token not configured
-        if: steps.token.outputs.present == 'false'
-        run: echo "::warning::SNYK_TOKEN not set — add it in Settings → Secrets → Actions to enable Snyk IaC scanning."
 
   # ── 3. CodeQL — GitHub AI static analysis (Python) ───────────────────────────
   codeql:
