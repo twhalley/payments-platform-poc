@@ -209,6 +209,7 @@ helm upgrade --install kube-prometheus-stack \
   prometheus-community/kube-prometheus-stack \
   --namespace monitoring --create-namespace \
   --values monitoring/values-kube-prometheus-stack.yaml \
+  --set grafana.adminPassword=poc-admin \
   --wait
 
 kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80

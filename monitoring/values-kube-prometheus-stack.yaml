@@ -7,7 +7,7 @@
 
 prometheus:
   prometheusSpec:
-    retention: 7d
+    retention: 30d
     resources:
       requests: { cpu: 200m, memory: 512Mi }
       limits:   { cpu: 500m, memory: 1Gi }
@@ -31,7 +31,11 @@ prometheus:
 
 grafana:
   enabled: true
-  adminPassword: "poc-admin"    # override via --set grafana.adminPassword=... in real use
+  # adminPassword: intentionally unset — pass at install time via:
+  #   helm upgrade --install ... --set grafana.adminPassword=<secret>
+  # Never commit a real password here. For the local PoC demo run:
+  #   helm upgrade --install ... --set grafana.adminPassword=poc-admin
+  adminPassword: null
   service:
     type: ClusterIP
   dashboardProviders:

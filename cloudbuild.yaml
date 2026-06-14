@@ -12,7 +12,7 @@ steps:
         kubectl kustomize k8s/overlays/prod > /dev/null && echo "prod overlay OK"
 
   # 2. Trivy filesystem scan (IaC + secrets) before building the image
-  - name: aquasec/trivy:latest
+  - name: aquasec/trivy:0.51.0
     id: trivy-fs
     args:
       - fs
@@ -38,7 +38,7 @@ steps:
       - $_AR_HOSTNAME/$PROJECT_ID/$_REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
 
   # 5. Trivy image scan
-  - name: aquasec/trivy:latest
+  - name: aquasec/trivy:0.51.0
     id: trivy-image
     args:
       - image

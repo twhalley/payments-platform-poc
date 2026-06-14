@@ -38,12 +38,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Snyk IaC scan (Terraform + K8s manifests)
-        uses: snyk/actions/iac@master
+        uses: snyk/actions/iac@1.1.2
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
           args: --severity-threshold=high --report
-        continue-on-error: true   # don't block on warnings in PoC; tighten for prod
 
       - name: Upload Snyk results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
@@ -97,14 +96,13 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Trivy — image scan (CVE + secrets + misconfigs)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.24.0
         with:
           image-ref: ghcr.io/${{ github.repository }}/nginx-app:${{ github.sha }}
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
           exit-code: "1"          # fail the build on CRITICAL/HIGH CVEs
-        continue-on-error: true
 
       - name: Upload Trivy results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3

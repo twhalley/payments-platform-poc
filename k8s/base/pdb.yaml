@@ -1,0 +1,10 @@
+# Ensure at least 1 nginx pod stays up during voluntary disruptions (node drain, rolling upgrade).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nginx-app
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx-app

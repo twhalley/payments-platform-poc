@@ -29,3 +29,6 @@ trivy-report.*
 __pycache__/
 *.pyc
 node_modules/
+
+# claude
+.claude/
