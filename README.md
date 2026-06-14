@@ -322,8 +322,8 @@ configuration is auditable from the same source of truth as the code.
 | Feature | Status | How it's enabled |
 |---|---|---|
 | **Dependabot version updates** | ✅ Enabled | [`.github/dependabot.yml`](.github/dependabot.yml) — weekly PRs for Actions, Docker, pip, Terraform, npm |
-| **Dependabot security updates** | ✅ Enabled | Enabled via `gh api PUT /repos/.../vulnerability-alerts` — auto-PRs for CVEs in dependencies |
-| **Dependabot auto security fixes** | ✅ Enabled | Enabled via `gh api PUT /repos/.../automated-security-fixes` — auto-merges patch-level security PRs |
+| **Dependabot security updates** | ✅ Enabled | Raises PRs when a dependency has a published CVE — requires human review before merge |
+| **Dependabot auto security fixes** | ❌ Intentionally disabled | Auto-merging security patches without review is not appropriate for a payments platform. All fixes go through the standard PR + CI gate process. |
 | **CodeQL (GHAS)** | ✅ Enabled | `.github/workflows/ci.yaml` — SARIF uploaded to Security tab on every push |
 | **Secret scanning** | ✅ Enabled | GitHub Push Protection — blocks pushes containing detected secrets |
 | **Private vulnerability reporting** | ✅ Enabled | [`SECURITY.md`](SECURITY.md) — reports via GitHub Security Advisories |
