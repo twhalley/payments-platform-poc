@@ -25,3 +25,8 @@ labels:
   - includeSelectors: false
     pairs:
       environment: dev
+
+images:
+  - name: nginxinc/nginx-unprivileged
+    newName: ghcr.io/twhalley/payments-platform-poc/nginx-app
+    newTag: b6e85e31a33987611acc1aba987d6d039efaef4a
