@@ -1,0 +1,70 @@
+# Helm values for kube-prometheus-stack.
+# Install:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#     -n monitoring --create-namespace \
+#     -f monitoring/values-kube-prometheus-stack.yaml --wait
+
+prometheus:
+  prometheusSpec:
+    retention: 7d
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits:   { cpu: 500m, memory: 1Gi }
+    # scrape all namespaces (the PoC is small enough)
+    podMonitorNamespaceSelector: {}
+    serviceMonitorNamespaceSelector: {}
+    # scrape pods annotated with prometheus.io/scrape: "true"
+    additionalScrapeConfigs:
+      - job_name: annotated-pods
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            target_label: __address__
+            regex: (.+)
+            replacement: $1
+
+grafana:
+  enabled: true
+  adminPassword: "poc-admin"    # override via --set grafana.adminPassword=... in real use
+  service:
+    type: ClusterIP
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: default
+          orgId: 1
+          folder: ""
+          type: file
+          options:
+            path: /var/lib/grafana/dashboards/default
+  dashboards:
+    default:
+      kubernetes-hpa:
+        gnetId: 10257    # Kubernetes HPA dashboard from grafana.com
+        revision: 1
+        datasource: Prometheus
+      nginx-overview:
+        gnetId: 9614
+        revision: 1
+        datasource: Prometheus
+
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    resources:
+      requests: { cpu: 50m, memory: 64Mi }
+      limits:   { cpu: 100m, memory: 128Mi }
+
+# Lightweight node-exporter for local kind (no actual node hardware to export)
+nodeExporter:
+  enabled: true
+
+kubeStateMetrics:
+  enabled: true

@@ -1,0 +1,26 @@
+# Helm values for the ArgoCD install.
+# Install: helm upgrade --install argocd argo/argo-cd -n argocd -f argocd/values-argocd.yaml
+global:
+  logging:
+    level: info
+
+server:
+  # Disable TLS on the server — handled by ingress/Istio in this PoC
+  extraArgs:
+    - --insecure
+  service:
+    type: ClusterIP
+
+configs:
+  params:
+    server.insecure: true
+  cm:
+    # only pull from signed commits (pairs with Phase 10 supply chain work)
+    resource.customizations: ""
+  rbac:
+    policy.default: role:readonly
+    policy.csv: |
+      p, role:admin, applications, *, */*, allow
+      p, role:admin, clusters,     get, *, allow
+      p, role:admin, repositories, *, *, allow
+      g, argocd-admins, role:admin

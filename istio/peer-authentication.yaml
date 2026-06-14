@@ -1,0 +1,10 @@
+# Enforce mTLS for all pods in payments-dev — no plaintext service-to-service traffic.
+# Maps to PCI-DSS Requirement 4 (protect cardholder data with strong cryptography in transit).
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default-mtls
+  namespace: payments-dev
+spec:
+  mtls:
+    mode: STRICT    # reject plaintext; require valid mutual TLS certificates

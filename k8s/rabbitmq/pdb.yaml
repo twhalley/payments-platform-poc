@@ -1,0 +1,13 @@
+# PodDisruptionBudget: ensure at least 2 of 3 RabbitMQ nodes stay up during
+# voluntary disruptions (node drain, rolling upgrade).
+# Without this, kubectl drain could take down the quorum and halt payments.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rabbitmq
+  namespace: payments-dev
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rabbitmq

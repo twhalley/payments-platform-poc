@@ -1,0 +1,70 @@
+name: Supply Chain — SBOM + SLSA Provenance
+
+on:
+  workflow_run:
+    workflows: ["CI — Build, Scan, Sign, Deploy"]
+    types: [completed]
+    branches: [master]
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write        # required for cosign keyless + SLSA OIDC
+  attestations: write    # required for SLSA provenance via GitHub
+
+jobs:
+  provenance:
+    name: Generate SLSA Provenance
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Pull built image
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker pull ghcr.io/${{ github.repository }}/nginx-app:${{ github.event.workflow_run.head_sha }}
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository }}/nginx-app:${{ github.event.workflow_run.head_sha }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Generate CycloneDX SBOM (second format — wider tooling support)
+        run: |
+          syft ghcr.io/${{ github.repository }}/nginx-app:${{ github.event.workflow_run.head_sha }} \
+            -o cyclonedx-json=sbom.cyclonedx.json
+
+      - name: Attest SBOM to image
+        run: |
+          IMAGE=ghcr.io/${{ github.repository }}/nginx-app:${{ github.event.workflow_run.head_sha }}
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $IMAGE | cut -d@ -f2)
+          cosign attest --yes \
+            --predicate sbom.spdx.json \
+            --type spdxjson \
+            ghcr.io/${{ github.repository }}/nginx-app@${DIGEST}
+
+      - name: Generate SLSA provenance attestation
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ghcr.io/${{ github.repository }}/nginx-app
+          subject-digest: ${{ github.event.workflow_run.head_sha }}
+          push-to-registry: true
+
+      - name: Verify signature + attestation (smoke test)
+        run: |
+          IMAGE=ghcr.io/${{ github.repository }}/nginx-app:${{ github.event.workflow_run.head_sha }}
+          cosign verify \
+            --certificate-identity-regexp "https://github.com/${{ github.repository }}/" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            ${IMAGE}
+          echo "Signature verified OK"

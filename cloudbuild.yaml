@@ -1,0 +1,69 @@
+# Google Cloud Build pipeline — mirrors the GitHub Actions workflow for GCP-native CI.
+# They use Google Cloud Build and GitHub Actions; both are present in this PoC.
+steps:
+  # 1. Lint Kustomize overlays
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: kustomize-lint
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        kubectl kustomize k8s/overlays/dev > /dev/null && echo "dev overlay OK"
+        kubectl kustomize k8s/overlays/prod > /dev/null && echo "prod overlay OK"
+
+  # 2. Trivy filesystem scan (IaC + secrets) before building the image
+  - name: aquasec/trivy:latest
+    id: trivy-fs
+    args:
+      - fs
+      - --exit-code=1
+      - --severity=CRITICAL,HIGH
+      - --scanners=vuln,secret,misconfig
+      - .
+
+  # 3. Build the container image
+  - name: gcr.io/cloud-builders/docker
+    id: build
+    args:
+      - build
+      - -t
+      - $_AR_HOSTNAME/$PROJECT_ID/$_REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+      - .
+
+  # 4. Push to Artifact Registry
+  - name: gcr.io/cloud-builders/docker
+    id: push
+    args:
+      - push
+      - $_AR_HOSTNAME/$PROJECT_ID/$_REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+
+  # 5. Trivy image scan
+  - name: aquasec/trivy:latest
+    id: trivy-image
+    args:
+      - image
+      - --exit-code=1
+      - --severity=CRITICAL,HIGH
+      - $_AR_HOSTNAME/$PROJECT_ID/$_REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+
+  # 6. Sign image with cosign using Workload Identity (no key management)
+  - name: gcr.io/projectsigstore/cosign:v2
+    id: cosign-sign
+    args:
+      - sign
+      - --yes
+      - $_AR_HOSTNAME/$PROJECT_ID/$_REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+    env:
+      - GOOGLE_SERVICE_ACCOUNT_NAME=cosign-signer@$PROJECT_ID.iam.gserviceaccount.com
+
+substitutions:
+  _AR_HOSTNAME: europe-west2-docker.pkg.dev
+  _REPO_NAME: payments-poc
+  _SERVICE_NAME: nginx-app
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+images:
+  - $_AR_HOSTNAME/$PROJECT_ID/$_REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA

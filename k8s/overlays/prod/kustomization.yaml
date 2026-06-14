@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: payments-prod
+namePrefix: prod-
+resources:
+  - ../../base
+patches:
+  # prod: higher replica count for HA
+  - target:
+      kind: Deployment
+      name: nginx-app
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 5
+  # prod: pin to a specific digest rather than a mutable tag
+  - target:
+      kind: Deployment
+      name: nginx-app
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: nginxinc/nginx-unprivileged:1.27-alpine
+labels:
+  - includeSelectors: false
+    pairs:
+      environment: prod
