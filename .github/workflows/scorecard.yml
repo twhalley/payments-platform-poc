@@ -27,10 +27,8 @@ on:
   branch_protection_rule:
 
 # Scorecard requires read-all at the top level; individual jobs scope down further
+# NOTE: no global env: block allowed — scorecard-action workflow restrictions forbid it.
 permissions: read-all
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   scorecard:
