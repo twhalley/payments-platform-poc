@@ -37,9 +37,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check SNYK_TOKEN
+        id: token
+        run: echo "present=${{ secrets.SNYK_TOKEN != '' }}" >> $GITHUB_OUTPUT
+
       - name: Snyk IaC scan (Terraform + K8s manifests)
-        # Skips gracefully if SNYK_TOKEN is not set — add it in repo Settings → Secrets
-        if: ${{ secrets.SNYK_TOKEN != '' }}
+        if: steps.token.outputs.present == 'true'
         uses: snyk/actions/iac@9adf32b1121593767fc3c057af55b55db032dc04  # v1.0.0
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
@@ -47,14 +50,14 @@ jobs:
           args: --severity-threshold=high --report
 
       - name: Upload Snyk results to GitHub Security
+        if: steps.token.outputs.present == 'true'
         uses: github/codeql-action/upload-sarif@v3
-        if: ${{ secrets.SNYK_TOKEN != '' }}
         with:
           sarif_file: snyk.sarif
 
       - name: Snyk token not configured
-        if: ${{ secrets.SNYK_TOKEN == '' }}
-        run: echo "::warning::SNYK_TOKEN secret not set — Snyk IaC scan skipped. Add it in Settings → Secrets → Actions."
+        if: steps.token.outputs.present == 'false'
+        run: echo "::warning::SNYK_TOKEN not set — add it in Settings → Secrets → Actions to enable Snyk IaC scanning."
 
   # ── 3. CodeQL — GitHub AI static analysis ────────────────────────────────────
   codeql:
