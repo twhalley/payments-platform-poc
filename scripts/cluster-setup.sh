@@ -10,7 +10,7 @@ sudo KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster --config kind-config.
 
 echo "==> Exporting kubeconfig for current user..."
 mkdir -p ~/.kube
-sudo kind get kubeconfig --name payments-poc > ~/.kube/config
+sudo KIND_EXPERIMENTAL_PROVIDER=podman kind get kubeconfig --name payments-poc > ~/.kube/config
 chmod 600 ~/.kube/config
 
 echo "==> Creating namespaces..."
