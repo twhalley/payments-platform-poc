@@ -312,6 +312,41 @@ This satisfies the OpenSSF Scorecard "Code-Review" check.
 
 ---
 
+## Repository security settings
+
+All settings below are applied to this repo. They are documented here so the
+configuration is auditable from the same source of truth as the code.
+
+### GitHub Security features
+
+| Feature | Status | How it's enabled |
+|---|---|---|
+| **Dependabot version updates** | ✅ Enabled | [`.github/dependabot.yml`](.github/dependabot.yml) — weekly PRs for Actions, Docker, pip, Terraform, npm |
+| **Dependabot security updates** | ✅ Enabled | Enabled via `gh api PUT /repos/.../vulnerability-alerts` — auto-PRs for CVEs in dependencies |
+| **Dependabot auto security fixes** | ✅ Enabled | Enabled via `gh api PUT /repos/.../automated-security-fixes` — auto-merges patch-level security PRs |
+| **CodeQL (GHAS)** | ✅ Enabled | `.github/workflows/ci.yaml` — SARIF uploaded to Security tab on every push |
+| **Secret scanning** | ✅ Enabled | GitHub Push Protection — blocks pushes containing detected secrets |
+| **Private vulnerability reporting** | ✅ Enabled | [`SECURITY.md`](SECURITY.md) — reports via GitHub Security Advisories |
+| **OpenSSF Scorecard** | ✅ Enabled | `.github/workflows/scorecard.yml` — fires on push to master + weekly cron, badge in README |
+
+> To enable Dependabot security features on a new fork, run:
+> ```bash
+> gh api --method PUT /repos/{owner}/{repo}/vulnerability-alerts
+> gh api --method PUT /repos/{owner}/{repo}/automated-security-fixes
+> ```
+
+### Required GitHub Actions secret
+
+| Secret | Where to get it | Effect if missing |
+|---|---|---|
+| `SNYK_TOKEN` | [snyk.io](https://snyk.io) → Account Settings → API Token (free) | Snyk IaC scan step is skipped with a warning; all other CI gates still run |
+
+**Add it:** repo → **Settings → Secrets and variables → Actions → New repository secret** → name: `SNYK_TOKEN`.
+
+Once added, Snyk IaC scan results appear in the **Security → Code scanning** tab alongside CodeQL and Trivy findings.
+
+---
+
 ## Security audit — what was found and fixed
 
 A full audit was run against this project. Summary of findings and resolutions:
