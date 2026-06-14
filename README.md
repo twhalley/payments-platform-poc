@@ -67,7 +67,7 @@ your user. Without this the cluster will hang at "Starting control-plane" and ti
 sudo mkdir -p /etc/systemd/system/user@.service.d
 sudo tee /etc/systemd/system/user@.service.d/delegate.conf <<'EOF'
 [Service]
-Delegate=cpu cpuset io memory pids
+Delegate=yes
 EOF
 sudo systemctl daemon-reload
 ```
@@ -76,8 +76,9 @@ sudo systemctl daemon-reload
 
 Verify before continuing:
 ```bash
-cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers
-# expected: cpuset cpu io memory pids
+systemctl --user show-environment | grep -i delegate || \
+  cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers
+# expected output includes: cpuset cpu io memory pids
 ```
 
 ### 3. Tell kind to use Podman (add to `~/.bashrc` or `~/.zshrc`)
