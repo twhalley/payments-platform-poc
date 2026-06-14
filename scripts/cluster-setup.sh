@@ -40,6 +40,19 @@ run_kind get kubeconfig --name payments-poc > ~/.kube/config
 chmod 600 ~/.kube/config
 export KUBECONFIG=~/.kube/config
 
+# ── CNI (Codespaces only) ─────────────────────────────────────────────────────
+# The Codespaces kind config sets disableDefaultCNI: true because kind's built-in
+# CNI installer runs kubectl *inside* the kind container, which fails with
+# "connection refused on 6443" — hairpin NAT is not supported by the DinD bridge.
+# Install Flannel from outside instead: kubectl here runs in the devcontainer and
+# reaches the API server through kind's external port mapping, which works fine.
+if [[ "${CODESPACES:-}" == "true" ]]; then
+  echo "==> Installing CNI (Flannel)..."
+  kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+  echo "==> Waiting for nodes to be Ready..."
+  kubectl wait node --for=condition=Ready --all --timeout=180s
+fi
+
 # ── Namespaces ────────────────────────────────────────────────────────────────
 echo "==> Creating namespaces..."
 for ns in payments-dev payments-helm payments-prod monitoring argocd; do

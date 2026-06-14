@@ -17,6 +17,13 @@ name: payments-poc
 networking:
   podSubnet: "10.244.0.0/16"
   serviceSubnet: "10.96.0.0/12"
+  # Disable the built-in CNI: kind installs it by running kubectl *inside* the
+  # kind container, which fails with "connection refused on 6443" because the
+  # DinD Docker daemon's bridge doesn't support hairpin NAT (a container can't
+  # reach its own external bridge IP). The cluster-setup.sh script installs
+  # Flannel *from outside* the kind containers instead, using the API server's
+  # external port mapping — a path that works fine.
+  disableDefaultCNI: true
 nodes:
   - role: control-plane
     image: kindest/node:v1.32.3
