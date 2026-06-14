@@ -1,6 +1,6 @@
 # Minimal Dockerfile wrapping the nginx-unprivileged base image with our custom content.
 # The base image already runs as UID 101 (non-root) and listens on 8080.
-FROM nginxinc/nginx-unprivileged:1.27-alpine
+FROM nginxinc/nginx-unprivileged:1.31-alpine
 
 # Upgrade all OS packages to pick up latest Alpine security patches.
 # Fixes CVE-2026-40200 (musl), CVE-2026-22184 (zlib),
