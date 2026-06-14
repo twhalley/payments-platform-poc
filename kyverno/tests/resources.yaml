@@ -1,0 +1,81 @@
+# Test resources for Kyverno policy unit tests.
+# Used by kyverno/tests/unit-test.yaml — run with: kyverno test kyverno/
+# No cluster required — tests run against the policy YAML directly.
+#
+# One "good" pod that should PASS all three policies.
+# Three "bad" pods that should each FAIL one specific policy.
+---
+# ── PASS: compliant pod ───────────────────────────────────────────────────────
+apiVersion: v1
+kind: Pod
+metadata:
+  name: good-pod
+  namespace: payments-dev
+spec:
+  securityContext:
+    runAsNonRoot: true
+  containers:
+    - name: app
+      image: nginxinc/nginx-unprivileged:1.27-alpine
+      resources:
+        requests: { cpu: 25m,  memory: 32Mi }
+        limits:   { cpu: 100m, memory: 64Mi }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        allowPrivilegeEscalation: false
+---
+# ── FAIL require-non-root: container sets runAsNonRoot: false ─────────────────
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-pod-root
+  namespace: payments-dev
+spec:
+  containers:
+    - name: app
+      image: nginx:latest
+      resources:
+        requests: { cpu: 10m, memory: 32Mi }
+        limits:   { cpu: 100m, memory: 64Mi }
+      securityContext:
+        runAsNonRoot: false         # POLICY VIOLATION
+        allowPrivilegeEscalation: false
+---
+# ── FAIL require-resource-limits: no resources block at all ──────────────────
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-pod-no-limits
+  namespace: payments-dev
+spec:
+  securityContext:
+    runAsNonRoot: true
+  containers:
+    - name: app
+      image: nginxinc/nginx-unprivileged:1.27-alpine
+      # POLICY VIOLATION: no resources.requests or resources.limits declared
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        allowPrivilegeEscalation: false
+---
+# ── FAIL block-privileged: allowPrivilegeEscalation: true ────────────────────
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-pod-privileged
+  namespace: payments-dev
+spec:
+  securityContext:
+    runAsNonRoot: true
+  containers:
+    - name: app
+      image: nginxinc/nginx-unprivileged:1.27-alpine
+      resources:
+        requests: { cpu: 10m, memory: 32Mi }
+        limits:   { cpu: 100m, memory: 64Mi }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        allowPrivilegeEscalation: true   # POLICY VIOLATION

@@ -1,0 +1,51 @@
+# Kyverno policy unit tests — run with: kyverno test kyverno/
+# No cluster required. Tests run against the raw policy YAML files.
+#
+# Each result entry asserts whether a specific policy rule should PASS or FAIL
+# against a specific resource from resources.yaml.
+#
+# This demonstrates that policies themselves are tested before they are deployed —
+# a policy with a typo that silently passes everything is as bad as no policy at all.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: payments-platform-policy-tests
+policies:
+  - ../policies/require-non-root.yaml
+  - ../policies/require-resource-limits.yaml
+  - ../policies/block-privileged.yaml
+resources:
+  - resources.yaml
+results:
+  # ── require-non-root ───────────────────────────────────────────────────────
+  - policy: require-non-root
+    rule: check-runasnonroot
+    resource: good-pod
+    result: pass
+
+  - policy: require-non-root
+    rule: check-runasnonroot
+    resource: bad-pod-root
+    result: fail
+
+  # ── require-resource-limits ────────────────────────────────────────────────
+  - policy: require-resource-limits
+    rule: check-limits
+    resource: good-pod
+    result: pass
+
+  - policy: require-resource-limits
+    rule: check-limits
+    resource: bad-pod-no-limits
+    result: fail
+
+  # ── block-privileged-containers ────────────────────────────────────────────
+  - policy: block-privileged-containers
+    rule: no-privileged
+    resource: good-pod
+    result: pass
+
+  - policy: block-privileged-containers
+    rule: no-privileged
+    resource: bad-pod-privileged
+    result: fail

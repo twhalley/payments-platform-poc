@@ -25,7 +25,23 @@ charts/**/charts/
 trivy-report.*
 *.sbom.json
 .snyk-result.json
+k6-summary.json
+codeql-db/
+codeql-results.sarif
+zap-report/
+
+# pre-commit
+.pre-commit-cache/
+# .secrets.baseline is intentionally tracked (suppress known false-positives)
+
+# temp files generated during demos
+/tmp/*.json
+/tmp/*.spdx.json
 
 __pycache__/
 *.pyc
+*.php~
 node_modules/
+
+# claude
+.claude/

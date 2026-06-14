@@ -1,0 +1,49 @@
+# Deny all traffic by default; then allow only known service-to-service paths.
+# Maps to PCI-DSS Requirement 7 (restrict access to system components by business need).
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: payments-dev
+spec: {}   # empty spec = deny everything
+---
+# Allow ingress-nginx (or the Istio ingress gateway) to reach nginx-app
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-ingress-to-nginx
+  namespace: payments-dev
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx-app
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/ingress-nginx/sa/ingress-nginx"
+              - "cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"
+      to:
+        - operation:
+            methods: ["GET", "HEAD"]
+            ports: ["8080"]
+---
+# Allow Prometheus to scrape metrics from nginx pods
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: payments-dev
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx-app
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/monitoring/sa/kube-prometheus-stack-prometheus"
+      to:
+        - operation:
+            ports: ["9113", "8080"]

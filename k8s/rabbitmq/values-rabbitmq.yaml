@@ -1,0 +1,39 @@
+# Helm values for Bitnami RabbitMQ chart.
+# Install:
+#   helm repo add bitnami https://charts.bitnami.com/bitnami
+#   helm upgrade --install rabbitmq bitnami/rabbitmq \
+#     -n payments-dev -f k8s/rabbitmq/values-rabbitmq.yaml --wait
+#
+# RabbitMQ is a StatefulSet — each pod gets a stable hostname (rabbitmq-0, rabbitmq-1)
+# and its own PVC. This matters because RabbitMQ nodes identify each other by hostname
+# in their cluster formation protocol; restarting a pod must retain its name and data.
+
+replicaCount: 3    # quorum for HA — losing 1 node still has a majority
+
+auth:
+  username: payments
+  # In production: use External Secrets Operator or KMS-backed Secret.
+  # For PoC: set via --set auth.password=... and do NOT commit the real value.
+  password: "poc-change-me"
+  erlangCookie: "poc-erlang-cookie"   # shared across nodes; must match
+
+persistence:
+  enabled: true
+  size: 1Gi
+
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits:   { cpu: 500m, memory: 512Mi }
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+
+# Queues relevant to the payment flow
+extraConfiguration: |
+  default_vhost = payments
+  default_permissions.configure = .*
+  default_permissions.read = .*
+  default_permissions.write = .*

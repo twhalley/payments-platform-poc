@@ -1,0 +1,51 @@
+# NetworkPolicy for RabbitMQ producer and consumer.
+# Consumers need egress to RabbitMQ on 5672; producers the same.
+# Without this, the default-deny policy blocks them.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-consumer-to-rabbitmq
+  namespace: payments-dev
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: payment-consumer
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rabbitmq
+      ports:
+        - port: 5672
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-producer-to-rabbitmq
+  namespace: payments-dev
+spec:
+  podSelector:
+    matchLabels:
+      job-name: payment-producer
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rabbitmq
+      ports:
+        - port: 5672
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

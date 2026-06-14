@@ -1,0 +1,33 @@
+# Kyverno policy: reject any pod that runs as root or doesn't set runAsNonRoot.
+# Maps to PCI-DSS Requirement 2 (apply secure configurations to all system components).
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-non-root
+  annotations:
+    policies.kyverno.io/title: Require Non-Root Containers
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      Containers must not run as root. Sets runAsNonRoot: true and
+      prevents UID 0 explicitly.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: check-runasnonroot
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [payments-dev, payments-prod]
+      validate:
+        message: "Containers must set runAsNonRoot: true and not use UID 0."
+        pattern:
+          spec:
+            securityContext:
+              runAsNonRoot: true
+            containers:
+              - securityContext:
+                  runAsNonRoot: true
+                  =(runAsUser): ">0"

@@ -1,0 +1,28 @@
+# Kyverno policy: block privileged containers and privilege escalation.
+# Maps to PCI-DSS Requirement 6 (develop and maintain secure systems and software).
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: block-privileged-containers
+  annotations:
+    policies.kyverno.io/title: Block Privileged Containers
+    policies.kyverno.io/category: Pod Security / PCI-DSS
+    policies.kyverno.io/severity: critical
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: no-privileged
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [payments-dev, payments-prod]
+      validate:
+        message: "Privileged containers are not permitted."
+        pattern:
+          spec:
+            containers:
+              - =(securityContext):
+                  =(privileged): "false"
+                  allowPrivilegeEscalation: false

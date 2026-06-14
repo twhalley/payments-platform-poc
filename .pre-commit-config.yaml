@@ -1,0 +1,67 @@
+# Pre-commit hooks — security checks that run before every git commit.
+#
+# Install once:
+#   pip install pre-commit
+#   pre-commit install          # registers hooks in .git/hooks/
+#   pre-commit run --all-files  # run against everything (first-time baseline)
+#
+# Why this matters: the Stripe key incident during PoC development was caught at
+# git push (GitHub Push Protection). With these hooks installed it would have
+# been caught at git commit — earlier in the chain, without touching the network.
+# Layer 0 (pre-commit) → Layer 1 (GitHub Push Protection) → Layer 2 (Trivy in CI)
+#
+# Generate a secrets baseline (allows known false-positives to be suppressed):
+#   detect-secrets scan > .secrets.baseline
+#   git add .secrets.baseline
+
+repos:
+  # ── Secret detection — gitleaks (fast, Go binary, common in enterprise) ───────
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+        name: "gitleaks — scan for secrets before commit"
+
+  # ── Secret detection — detect-secrets (Yelp, used in major financial orgs) ───
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+      - id: detect-secrets
+        name: "detect-secrets — catch credentials and API keys"
+        args: ['--baseline', '.secrets.baseline']
+        exclude: |
+          (?x)
+          demo/insecure-code/|
+          \.secrets\.baseline
+
+  # ── General hygiene ───────────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-yaml
+        name: "validate YAML syntax"
+        args: [--allow-multiple-documents]
+      - id: check-json
+        name: "validate JSON syntax"
+      - id: check-merge-conflict
+        name: "check for unresolved merge conflict markers"
+      - id: end-of-file-fixer
+        name: "ensure files end with a newline"
+      - id: trailing-whitespace
+        name: "remove trailing whitespace"
+      - id: check-added-large-files
+        name: "block files over 1 MB"
+        args: ['--maxkb=1000']
+      - id: detect-private-key
+        name: "block private keys from being committed"
+
+  # ── Terraform formatting + validation ─────────────────────────────────────────
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.92.1
+    hooks:
+      - id: terraform_fmt
+        name: "terraform fmt — enforce canonical formatting"
+      - id: terraform_validate
+        name: "terraform validate — check configuration syntax"
+        args:
+          - --init-args=-backend=false   # skip remote state for local validation

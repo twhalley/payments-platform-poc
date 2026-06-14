@@ -1,0 +1,51 @@
+# DEMO: This Deployment will be BLOCKED by Kyverno verifyImages policy.
+#
+# Purpose: negative test case showing unsigned image admission gate enforcement.
+#
+# Run:
+#   kubectl apply -f demo/unsigned-deploy.yaml
+#
+# Expected response:
+#   Error from server: admission webhook denied the request:
+#   image alpine:3.19 failed cosign verification — not signed by the build pipeline
+#
+# Why it's blocked:
+#   kyverno/policies/verify-images.yaml requires every image in payments-dev
+#   to carry a cosign signature issued by the GitHub Actions OIDC identity.
+#   alpine:3.19 was never pushed through the pipeline — no signature exists.
+#
+# Positive contrast:
+#   Images built by .github/workflows/ci.yaml are signed in the `sign` job.
+#   Those images carry a valid signature and are admitted without modification.
+#   mutateDigest: true pins any passing image to its immutable digest.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: supply-chain-attack
+  namespace: payments-dev
+  labels:
+    demo: "negative"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: supply-chain-attack
+  template:
+    metadata:
+      labels:
+        app: supply-chain-attack
+    spec:
+      containers:
+        - name: attacker
+          image: alpine:3.19
+          command: ["sleep", "3600"]
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits:   { cpu: 50m,  memory: 32Mi }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

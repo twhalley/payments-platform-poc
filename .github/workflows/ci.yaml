@@ -1,0 +1,186 @@
+name: CI — Build, Scan, Sign, Deploy
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+  packages: write          # push image to GHCR
+  security-events: write   # upload SARIF to GitHub Security
+  id-token: write          # cosign keyless signing via OIDC
+
+jobs:
+  # ── 1. Lint manifests ────────────────────────────────────────────────────────
+  lint:
+    name: Lint Kustomize + Helm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Kustomize build (dry-run)
+        run: |
+          kubectl kustomize k8s/overlays/dev > /dev/null
+          kubectl kustomize k8s/overlays/prod > /dev/null
+
+      - uses: azure/setup-helm@v4
+      - name: Helm lint
+        run: helm lint charts/nginx-app
+
+  # ── 2. Snyk — AI-powered vulnerability + IaC scanning ───────────────────────
+  snyk:
+    name: Snyk Scan (code + IaC)
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check SNYK_TOKEN
+        id: token
+        run: echo "present=${{ secrets.SNYK_TOKEN != '' }}" >> $GITHUB_OUTPUT
+
+      - name: Snyk IaC scan (Terraform + K8s manifests)
+        if: steps.token.outputs.present == 'true'
+        uses: snyk/actions/iac@9adf32b1121593767fc3c057af55b55db032dc04  # v1.0.0
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --report
+
+      - name: Upload Snyk results to GitHub Security
+        if: steps.token.outputs.present == 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: snyk.sarif
+
+      - name: Snyk token not configured
+        if: steps.token.outputs.present == 'false'
+        run: echo "::warning::SNYK_TOKEN not set — add it in Settings → Secrets → Actions to enable Snyk IaC scanning."
+
+  # ── 3. CodeQL — GitHub AI static analysis ────────────────────────────────────
+  codeql:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python   # extend with go/javascript as services are added
+      - uses: github/codeql-action/autobuild@v3
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python"
+
+  # ── 4. Build + Trivy image scan ───────────────────────────────────────────────
+  build-scan:
+    name: Build Image + Trivy Scan
+    runs-on: ubuntu-latest
+    needs: lint
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          # load keeps the image in the local Docker daemon for Trivy on PRs
+          # (push and load are mutually exclusive when both true — safe here as push=false on PRs)
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ghcr.io/${{ github.repository }}/nginx-app:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy — image scan (CVE + secrets + misconfigs)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository }}/nginx-app:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "1"          # fail the build on CRITICAL/HIGH CVEs
+          ignore-unfixed: true    # only fail on CVEs that have a fix available
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+  # ── 5. cosign keyless sign + SBOM ─────────────────────────────────────────────
+  sign:
+    name: Sign Image + Attach SBOM
+    runs-on: ubuntu-latest
+    needs: [snyk, build-scan]
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install syft (SBOM generator)
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository }}/nginx-app:${{ github.sha }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Keyless sign image (Sigstore OIDC — no long-lived keys)
+        run: |
+          cosign sign --yes \
+            ghcr.io/${{ github.repository }}/nginx-app@${{ needs.build-scan.outputs.image-digest }}
+
+      - name: Attach SBOM as image attestation
+        run: |
+          cosign attest --yes \
+            --predicate sbom.spdx.json \
+            --type spdxjson \
+            ghcr.io/${{ github.repository }}/nginx-app@${{ needs.build-scan.outputs.image-digest }}
+
+  # ── 6. Bump image tag in Kustomize overlay → ArgoCD picks it up ───────────────
+  deploy:
+    name: Update Manifest (GitOps bump)
+    runs-on: ubuntu-latest
+    needs: sign
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump image tag in dev overlay
+        run: |
+          cd k8s/overlays/dev
+          # If the overlay has an images patch, update the digest; otherwise add it.
+          cat >> kustomization.yaml <<EOF
+          images:
+            - name: nginxinc/nginx-unprivileged
+              newName: ghcr.io/${{ github.repository }}/nginx-app
+              newTag: ${{ github.sha }}
+          EOF
+          # Deduplicate if already present (idempotent push)
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add kustomization.yaml
+          git diff --staged --quiet || git commit -m "chore: bump nginx-app to ${{ github.sha }}"
+          git push

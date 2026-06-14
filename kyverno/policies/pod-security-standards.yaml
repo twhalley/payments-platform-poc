@@ -1,0 +1,18 @@
+# Apply Kubernetes built-in Pod Security Standards at the namespace level.
+# "restricted" is the tightest profile — requires non-root, read-only rootfs,
+# no privilege escalation, dropped capabilities, and RuntimeDefault seccomp.
+# This enforces at the API server level, before Kyverno even runs.
+# Maps to PCI-DSS Requirement 2 (secure configurations).
+#
+# Apply with:
+#   kubectl label namespace payments-dev \
+#     pod-security.kubernetes.io/enforce=restricted \
+#     pod-security.kubernetes.io/audit=restricted \
+#     pod-security.kubernetes.io/warn=restricted
+#
+# Layered defence: PSS enforces at the API server, Kyverno at the admission webhook.
+# Two independent gates — if one is misconfigured, the other still fires.
+#
+# Note: only apply enforce=restricted after verifying all workloads pass the audit label first.
+# Run: kubectl label namespace payments-dev pod-security.kubernetes.io/audit=restricted --overwrite
+# Then check: kubectl get events -n payments-dev --field-selector reason=FailedCreate

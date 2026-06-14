@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-app-content
+data:
+  index.html: |
+    <!doctype html>
+    <html>
+    <head><title>Payments Platform PoC</title></head>
+    <body>
+      <h1>payments-platform-poc</h1>
+      <p>nginx-unprivileged, non-root, read-only rootfs, delivered via Kustomize.</p>
+      <p>Pod: ${HOSTNAME}</p>
+    </body>
+    </html>

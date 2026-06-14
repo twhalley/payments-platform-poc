@@ -1,0 +1,64 @@
+# Simulates a payment-authorisation service publishing events to RabbitMQ.
+# Uses a CronJob so it re-runs and shows the queue filling up.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: payment-producer
+  namespace: payments-dev
+spec:
+  schedule: "*/1 * * * *"   # every minute — enough to see queue depth grow
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+          containers:
+            - name: producer
+              image: python:3.12.9-alpine3.21
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  pip install pika --quiet
+                  python3 - <<'PYEOF'
+                  import pika, json, time, os, uuid
+
+                  url = os.environ["RABBITMQ_URL"]
+                  conn = pika.BlockingConnection(pika.URLParameters(url))
+                  ch = conn.channel()
+                  ch.queue_declare(queue="payment.authorised", durable=True)
+
+                  for i in range(10):
+                      payload = json.dumps({
+                          "event": "payment.authorised",
+                          "transaction_id": str(uuid.uuid4()),
+                          "amount_pence": 1000 + i * 50,
+                          "currency": "GBP",
+                      })
+                      ch.basic_publish(
+                          exchange="",
+                          routing_key="payment.authorised",
+                          body=payload,
+                          properties=pika.BasicProperties(delivery_mode=2),  # persistent
+                      )
+                      print(f"Published: {payload}")
+                      time.sleep(0.1)
+
+                  conn.close()
+                  PYEOF
+              env:
+                - name: RABBITMQ_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: rabbitmq-url
+                      key: url
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits:   { cpu: 100m, memory: 128Mi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: false   # pip needs to write; acceptable for a job
+                capabilities:
+                  drop: ["ALL"]

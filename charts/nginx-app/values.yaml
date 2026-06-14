@@ -1,0 +1,62 @@
+replicaCount: 2
+
+image:
+  repository: nginxinc/nginx-unprivileged
+  tag: "1.27-alpine"
+  pullPolicy: IfNotPresent
+
+containerPort: 8080
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 101
+  runAsGroup: 101
+  fsGroup: 101
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    cpu: 100m
+    memory: 64Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 50
+
+probes:
+  readiness:
+    path: /
+    initialDelaySeconds: 2
+    periodSeconds: 5
+  liveness:
+    path: /
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+content: |
+  <!doctype html>
+  <html>
+  <head><title>Payments Platform PoC (Helm)</title></head>
+  <body>
+    <h1>payments-platform-poc</h1>
+    <p>Delivered via Helm chart. Non-root, read-only rootfs.</p>
+  </body>
+  </html>

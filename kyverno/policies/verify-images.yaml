@@ -1,0 +1,39 @@
+# Phase 10: Admission-time image verification.
+# Kyverno verifies cosign signatures before pods are scheduled.
+# Demo: try to deploy an unsigned image → Kyverno rejects it.
+#       Deploy a signed image → it passes and runs.
+# Maps to GCP Binary Authorization (the "set you apart" JD bullet).
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signatures
+  annotations:
+    policies.kyverno.io/title: Verify Image Signatures
+    policies.kyverno.io/category: Supply Chain Security / PCI-DSS
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/description: >-
+      Only admit pods whose images have been signed via cosign keyless signing
+      (Sigstore). Unsigned or tampered images are rejected at admission.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: check-image-signature
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [payments-dev, payments-prod]
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/twhalley/payments-platform-poc/*"
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    subject: "https://github.com/twhalley/payments-platform-poc/.github/workflows/ci.yaml@refs/heads/master"
+                    issuer: "https://token.actions.githubusercontent.com"
+                    rekor:
+                      url: https://rekor.sigstore.dev
+          mutateDigest: true    # pin tag → digest at admission for immutability
+          verifyDigest: true

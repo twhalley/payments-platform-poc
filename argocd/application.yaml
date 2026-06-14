@@ -1,0 +1,31 @@
+# ArgoCD Application — watches the dev Kustomize overlay in this repo and reconciles
+# any drift back to the declared state automatically (pull-based GitOps).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nginx-app-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io  # cascade-delete managed resources on app delete
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/twhalley/payments-platform-poc.git
+    targetRevision: master
+    path: k8s/overlays/dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: payments-dev
+  syncPolicy:
+    automated:
+      prune: true      # remove resources no longer in git
+      selfHeal: true   # revert manual kubectl edits — important for audit trail
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

@@ -1,0 +1,12 @@
+# ZAP baseline scan rule configuration.
+# Format: rule-id  IGNORE|WARN|FAIL  description
+# Reference: https://www.zaproxy.org/docs/alerts/
+#
+# IGNORE rules that are false positives or not applicable to a static demo target.
+# FAIL rules that must block deployment in production (change fail_action to true).
+
+10035	IGNORE	Strict-Transport-Security header missing (nginx in PoC has no TLS — handled by Istio in cluster)
+10036	IGNORE	Server leaks version information (acceptable for PoC; suppress in prod via server_tokens off)
+10021	WARN	X-Content-Type-Options header missing
+10038	WARN	Content Security Policy header not set
+10096	WARN	Timestamp disclosure
