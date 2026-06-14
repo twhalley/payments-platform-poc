@@ -58,7 +58,24 @@ sudo install -m 0755 /tmp/k6-v2.0.0-linux-amd64/k6 /usr/local/bin/k6
 # sudo rm -f /etc/apt/sources.list.d/k6.list /usr/share/keyrings/k6-archive-keyring.gpg
 ```
 
-### 2. Tell kind to use Podman (add to `~/.bashrc` or `~/.zshrc`)
+### 2. Rootful Podman for kind — a note on the tradeoff
+
+The setup script creates the kind cluster using `sudo kind` (rootful Podman). This is a
+deliberate PoC simplification: rootless Podman requires systemd cgroup delegation
+(`Delegate=yes`) to take effect on a fresh login session, which adds friction to a demo.
+
+**Why rootful is fine here:** this is a local, single-user demo machine with no sensitive
+workloads. The security boundary that matters for this PoC is inside the cluster — the
+Kyverno policies, NetworkPolicies, securityContext hardening, and Istio mTLS — not the
+container runtime on the host.
+
+**What you'd do in production:** on GKE this is a non-issue — the managed control plane
+handles cgroup delegation transparently and nodes run containerd, not Podman. On a
+self-managed or on-prem cluster you'd configure rootless with `Delegate=yes` and a full
+session restart, which is the correct hardening posture (a compromised rootful container
+has root on the host; a rootless one does not).
+
+### 3. Tell kind to use Podman (add to `~/.bashrc` or `~/.zshrc`)
 
 ```bash
 export KIND_EXPERIMENTAL_PROVIDER=podman
