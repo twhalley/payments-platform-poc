@@ -582,26 +582,228 @@ Walk down the table — every PCI-DSS requirement maps to a specific file.
 
 ---
 
+### 16. Supply chain A/B — attack and defence scenarios
+
+Five attack scenarios, each with a positive (defended) and negative (attack attempt) path.
+All scenarios require the cluster to be running (`make cluster`).
+
+---
+
+#### A. Vulnerable image caught at build time (Trivy)
+
+**Attack:** ship a workload built on a known-vulnerable base image.
+
+```bash
+# Negative — build the intentionally bad image (nginx 1.14.0, ~40 known CVEs):
+docker build -f demo/vulnerable/Dockerfile -t demo-vulnerable .
+trivy image demo-vulnerable
+# Expected: CRITICAL CVEs — buffer overflows, remote code exec in nginx + OpenSSL
+```
+
+```bash
+# Positive — scan the hardened image used in production:
+trivy image nginxinc/nginx-unprivileged:1.27-alpine
+# Expected: 0 CRITICAL, 0 HIGH
+```
+
+Point at `.github/workflows/ci.yaml` line 105 — `exit-code: "1"` on CRITICAL/HIGH.
+The vulnerable image would never reach GHCR; the build fails before `docker push`.
+
+> *"The Trivy gate runs in the CI pipeline before the image is pushed to any registry.
+> The attacker's image fails the build — it never reaches production. `exit-code: '1'`
+> proves this is enforcement, not advisory. Show both scans side-by-side."*
+
+---
+
+#### B. Unsigned image blocked at admission (Kyverno)
+
+**Attack:** push an image to the registry by bypassing the signed-build pipeline, then try to deploy it.
+
+```bash
+# Negative — try to run any unsigned image in the protected namespace:
+kubectl run supply-chain-attack \
+  --image=alpine:3.19 \
+  --namespace payments-dev \
+  --restart=Never
+
+# Expected:
+# Error from server: admission webhook denied the request:
+# image alpine:3.19 failed cosign verification
+```
+
+```bash
+# Same result for a Deployment — the policy applies to all pod-creating resources:
+kubectl apply -f demo/unsigned-deploy.yaml
+# Expected: same admission webhook error
+```
+
+```bash
+# Show the policy that blocks it:
+kubectl get clusterpolicy verify-images -o yaml
+# Key fields: attestors.keyless.subject (GitHub Actions identity)
+#             mutateDigest: true — any image that does pass is pinned to its immutable digest
+```
+
+> *"Scanning tells you whether an image has known CVEs. Signing answers a different question:
+> is the thing running in my cluster exactly what the pipeline built — or did someone swap
+> it between build and deploy? No pipeline = no signature = blocked at admission. The
+> mutateDigest flag means even a tag-mutation attack ('latest' pointing to a different image)
+> is blocked — every deployed image is locked to a content-addressed SHA256 digest."*
+
+---
+
+#### C. SBOM reveals a hidden vulnerable dependency (syft + grype)
+
+The CI pipeline generates a full Software Bill of Materials at build time. You can interrogate
+it without rebuilding anything.
+
+```bash
+# Install grype (one-time):
+curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+# Positive — SBOM of the hardened production image:
+syft nginxinc/nginx-unprivileged:1.27-alpine -o spdx-json > /tmp/nginx-sbom.json
+grype sbom:/tmp/nginx-sbom.json
+# Expected: 0 findings (or low — no CRITICAL/HIGH)
+```
+
+```bash
+# Negative — SBOM of the vulnerable demo image:
+syft nginx:1.14.0 -o spdx-json > /tmp/vuln-sbom.json
+grype sbom:/tmp/vuln-sbom.json
+# Expected: ~40 CVEs across nginx, OpenSSL, zlib — visible without rebuilding
+```
+
+```bash
+# Real-world use case — answer "do we ship Log4j?" without redeploy:
+grype sbom:/tmp/nginx-sbom.json | grep -i log4j
+# Instant answer from the static SBOM — no running containers needed
+```
+
+> *"In an incident like Log4Shell you need to know in minutes, not hours, which services
+> are affected. SBOMs generated at build time and stored as OCI attestations let you
+> query across every image in your registry instantly. That's what 'shift-left' means
+> for supply chain — the evidence is captured at build, not reconstructed during the incident."*
+
+---
+
+#### D. Runtime attack detected by Falco
+
+With Falco running, unexpected behaviour inside a container fires an alert at the syscall level
+— it cannot be tampered with from inside the container.
+
+**Open two terminals:**
+
+```bash
+# Terminal 1 — watch for Falco events:
+kubectl logs -n falco -l app.kubernetes.io/name=falco -f
+```
+
+```bash
+# Terminal 2 — simulate post-exploitation behaviour (attacker gets RCE, opens a shell):
+kubectl exec -n payments-dev -it \
+  $(kubectl get pod -n payments-dev -l app.kubernetes.io/name=nginx-app -o name | head -1) \
+  -- /bin/sh
+```
+
+Terminal 1 fires immediately:
+```
+Notice A shell was spawned in a container with an attached terminal
+  (user=root k8s.ns=payments-dev k8s.pod=dev-nginx-app-xxx
+   proc.cmdline=sh image=nginxinc/nginx-unprivileged:1.27-alpine)
+```
+
+```bash
+# Inside the pod — try to write to the filesystem:
+touch /etc/test
+# Result: touch: /etc/test: Read-only file system  ← securityContext blocks the write
+# Falco also logs: Write below monitored dir /etc
+```
+
+```bash
+# Inside the pod — try to reach the GCP metadata endpoint (credential theft):
+wget -T 2 http://169.254.169.254/latest/meta-data/ 2>&1 || true
+# Falco logs: Outbound connection to IP/Port outside allowed list
+```
+
+> *"Kyverno and PSS prevent bad pods from being scheduled. Falco watches what's happening
+> inside running containers at the kernel syscall level. The three detections — shell spawn,
+> filesystem write, metadata endpoint probe — are the classic post-exploitation playbook
+> after a container escape. You need prevention AND detection; one without the other leaves
+> a gap."*
+
+---
+
+#### E. NetworkPolicy blocks lateral movement
+
+**Attack:** a compromised pod tries to reach services it has no business talking to.
+
+```bash
+# Negative — a rogue pod with no allowed egress tries to reach RabbitMQ:
+kubectl run lateral-move \
+  --image=busybox:1.36 \
+  --namespace payments-dev \
+  --rm -it \
+  --restart=Never \
+  -- sh
+
+# Inside the pod:
+wget -T 3 http://rabbitmq.payments-dev.svc:5672 2>&1 || echo "BLOCKED"
+# Expected: wget: download timed out — NetworkPolicy default-deny blocks it
+```
+
+```bash
+# Show what's allowed and what isn't:
+kubectl get networkpolicy -n payments-dev
+# allow-consumer-to-rabbitmq: only pods with app.kubernetes.io/name=payment-consumer
+# allow-producer-to-rabbitmq: only pods with job-name=payment-producer
+# The busybox pod matches neither — it's blocked even inside the same namespace
+```
+
+```bash
+# Positive — a legitimate consumer pod CAN reach RabbitMQ (it has the right label):
+kubectl exec -n payments-dev \
+  $(kubectl get pod -n payments-dev -l app.kubernetes.io/name=payment-consumer -o name | head -1) \
+  -- sh -c "wget -qO- http://rabbitmq.payments-dev.svc:15672 > /dev/null && echo OK"
+# Expected: OK
+```
+
+> *"Default-deny NetworkPolicy means every new pod is isolated until you explicitly allow
+> it. In a flat network, a compromised pod can reach any service on the cluster. With
+> NetworkPolicy, even if an attacker gets code execution in one pod, they can't pivot to the
+> message broker, the metrics endpoint, or any other service — they're in a one-pod jail.
+> The consumer can reach RabbitMQ because we explicitly said so. The rogue pod can't because
+> we never did."*
+
+---
+
 ## JD mapping
 
-| JD requirement | Where in this repo |
-|---|---|
-| Production Kubernetes (GKE) | `kind-config.yaml`, `terraform/gke.tf` |
-| Terraform for GCP | `terraform/` (plan-validated) |
-| CI/CD — Google Cloud Build + GitHub Actions | `cloudbuild.yaml`, `.github/workflows/` |
-| DNS, TLS/mTLS, load balancing | Istio mTLS (`istio/`), ingress port mappings |
-| Docker / container lifecycle | `Dockerfile`, `k8s/base/deployment.yaml` |
-| GitOps — ArgoCD + Kustomize | `argocd/application.yaml`, `k8s/overlays/` |
-| Istio / service mesh | `istio/peer-authentication.yaml`, `istio/authorization-policy.yaml` |
-| PCI-DSS at infrastructure level | `docs/pci-dss-mapping.md`, Kyverno, NetworkPolicies, KMS |
-| GCP: KMS, Cloud Armor, Binary Authorization | `terraform/kms.tf`, `terraform/vpc.tf`, `terraform/gke.tf` |
-| Local Kubernetes dev tooling (Tilt) | `Tiltfile` |
-| Prometheus + Grafana | `monitoring/values-kube-prometheus-stack.yaml` |
-| Snyk AI scanning | `.github/workflows/ci.yaml` — Snyk step |
-| Trivy multi-scanner | `.github/workflows/ci.yaml` — Trivy step |
-| Supply chain / Binary Authorization | `kyverno/policies/verify-images.yaml`, `.github/workflows/supply-chain.yaml` |
-| RabbitMQ async payment flow | `k8s/rabbitmq/` |
-| Helm | `charts/nginx-app/` (authored), platform charts (consumed) |
+Every JD requirement maps to specific files in this repo. Open the file directly to show evidence.
+
+| JD requirement | Demo step | Key files |
+|---|---|---|
+| Production Kubernetes (GKE) | Steps 1–2, 11 | `kind-config.yaml`, `terraform/gke.tf` (private cluster, Workload Identity, Shielded Nodes), `terraform/variables.tf` |
+| Terraform for GCP | Step 11 | `terraform/main.tf` (provider), `terraform/gke.tf` (cluster), `terraform/vpc.tf` (VPC + Cloud Armor), `terraform/kms.tf` (KMS rotation), `terraform/outputs.tf` |
+| CI/CD — GitHub Actions | Step 5 | `.github/workflows/ci.yaml` (lint → snyk → codeql → trivy → sign → deploy), `.github/workflows/dast.yaml` (ZAP), `.github/workflows/supply-chain.yaml` (SLSA provenance) |
+| CI/CD — Google Cloud Build | Step 5 | `cloudbuild.yaml` (Trivy pinned to `aquasec/trivy:0.51.0`, not `latest`) |
+| DNS, TLS / mTLS, load balancing | Step 9 | `istio/peer-authentication.yaml` (STRICT mTLS), `istio/authorization-policy.yaml` (deny-all + explicit allow) |
+| Docker / container lifecycle | Steps 2, 16A | `Dockerfile` (hardened build), `k8s/base/deployment.yaml` (securityContext, probes, emptyDir mounts), `demo/vulnerable/Dockerfile` (negative comparison) |
+| GitOps — ArgoCD + Kustomize | Steps 3–4 | `argocd/application.yaml` (prune + selfHeal), `argocd/values-argocd.yaml`, `k8s/base/kustomization.yaml`, `k8s/overlays/dev/kustomization.yaml`, `k8s/overlays/prod/kustomization.yaml` |
+| Istio / service mesh | Step 9 | `istio/peer-authentication.yaml`, `istio/authorization-policy.yaml` |
+| PCI-DSS at infrastructure level | Step 15 | `docs/pci-dss-mapping.md`, `k8s/base/networkpolicy.yaml`, `kyverno/policies/` (all five policies), `terraform/kms.tf` |
+| GCP: KMS, Cloud Armor, Binary Authorization | Step 11 | `terraform/kms.tf` (90-day rotation, `prevent_destroy`), `terraform/vpc.tf` (Cloud Armor WAF, OWASP rules), `terraform/gke.tf` (`binary_authorization: PROJECT_SINGLETON_POLICY_ENFORCE`) |
+| Local Kubernetes dev tooling (Tilt) | — | `Tiltfile`, `.devcontainer/devcontainer.json`, `.devcontainer/post-create.sh` |
+| Prometheus + Grafana + alerting | Steps 6, 13 | `monitoring/values-kube-prometheus-stack.yaml` (30-day retention), `monitoring/values-loki-stack.yaml` (Loki + Promtail), `monitoring/alert-rules.yaml` (7 PrometheusRules) |
+| Snyk AI scanning | Step 5 | `.github/workflows/ci.yaml` — `snyk` job (lines 33–51), Snyk IaC + DeepCode, SARIF upload to GitHub Security tab |
+| Trivy multi-scanner | Steps 5, 16A | `.github/workflows/ci.yaml` — `build-scan` job (lines 68–111), `exit-code: "1"` on CRITICAL/HIGH, `cloudbuild.yaml`, `demo/vulnerable/Dockerfile` |
+| Supply chain / Binary Authorization | Steps 12, 16B–C | `.github/workflows/ci.yaml` — `sign` job (lines 113–145), `kyverno/policies/verify-images.yaml`, `.github/workflows/supply-chain.yaml` (SLSA), `demo/unsigned-deploy.yaml` |
+| RabbitMQ async payment flow | Steps 7, 16E | `k8s/rabbitmq/consumer-deployment.yaml`, `k8s/rabbitmq/producer-job.yaml`, `k8s/rabbitmq/values-rabbitmq.yaml` (3-node quorum), `k8s/rabbitmq/pdb.yaml` (minAvailable: 2), `k8s/rabbitmq/networkpolicy.yaml` |
+| Helm — authoring + consuming | Step 2 | `charts/nginx-app/Chart.yaml`, `charts/nginx-app/values.yaml`, `charts/nginx-app/templates/_helpers.tpl`, `charts/nginx-app/templates/deployment.yaml` |
+| Runtime security | Step 10, 16D | Falco installed via `make falco`; `monitoring/alert-rules.yaml` |
+| DAST | Step 14 | `.github/workflows/dast.yaml`, `.zap/rules.tsv` (rule overrides with rationale) |
+| Automated dependency updates | — | `.github/dependabot.yml` (weekly PRs: Actions + Docker + pip + Terraform + npm) |
+| Vulnerability disclosure | — | `SECURITY.md` (private disclosure via GitHub Security Advisories) |
 
 ## Note on scope
 
