@@ -1,0 +1,11 @@
+# DAST scan target
+
+This file is referenced by the ZAP SARIF converter so that GitHub Code Scanning
+can anchor DAST findings to a physical location in the repository.
+
+GitHub Code Scanning requires physicalLocation in every SARIF result; DAST tools
+report HTTP endpoint URIs instead of source file paths. Each finding's actual URL
+is carried in the result message and logicalLocations.
+
+Target: http://localhost:8080 (nginx-unprivileged, mirroring the production image)
+Workflow: .github/workflows/dast.yaml

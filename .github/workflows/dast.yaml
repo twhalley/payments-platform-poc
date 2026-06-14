@@ -83,16 +83,23 @@ jobs:
                           "helpUri": f"https://www.zaproxy.org/docs/alerts/{rid}/",
                           "properties": {"security-severity": str(round(int(alert["riskcode"]) * 10 / 3, 1))}
                       })
-                  for inst in alert.get("instances", []):
+                  for i, inst in enumerate(alert.get("instances", [])):
                       uri = inst.get("uri", site.get("@name", ""))
-                      # DAST results reference HTTP URLs, not source files.
-                      # GitHub Code Scanning rejects physicalLocation with http:// URIs —
-                      # use logicalLocations (SARIF 2.1.0 §3.33) with kind="url" instead.
+                      # GitHub Code Scanning requires physicalLocation in every result.
+                      # DAST findings reference HTTP endpoints, not source files, so we
+                      # anchor each finding to dast/scan-target.txt (a real repo file)
+                      # and carry the actual URL in the message + logicalLocations.
                       results.append({
                           "ruleId": rid,
                           "level": risk_to_level(alert["riskcode"]),
                           "message": {"text": f"URL: {uri}\nMethod: {inst.get('method','')}\nEvidence: {inst.get('evidence','')}\n\n{alert['desc'].strip()}\n\nSolution: {alert.get('solution','').strip()}"},
-                          "locations": [{"logicalLocations": [{"name": uri, "kind": "url"}]}]
+                          "locations": [{
+                              "physicalLocation": {
+                                  "artifactLocation": {"uri": "dast/scan-target.txt", "uriBaseId": "%SRCROOT%"},
+                                  "region": {"startLine": i + 1}
+                              },
+                              "logicalLocations": [{"name": uri, "kind": "url"}]
+                          }]
                       })
 
           sarif = {
