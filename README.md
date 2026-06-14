@@ -50,7 +50,7 @@ The full stack (kind + Istio + Prometheus + RabbitMQ + Kyverno + Loki) needs ~6 
 1. Open `https://github.com/twhalley/payments-platform-poc`
 2. Click the green **Code** button → **Codespaces** tab
 3. Click **...** → **New with options...**
-4. Set **Branch** → `feat/devsecops-poc-scaffold`
+4. Set **Branch** → `master`
 5. Set **Machine type** → **4-core · 8 GB RAM · 32 GB storage**
 6. Click **Create codespace**
 
