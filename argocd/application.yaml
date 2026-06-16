@@ -16,6 +16,14 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: payments-dev
+  # The dev overlay declares spec.replicas, but an HPA owns the replica count at
+  # runtime. Without this, ArgoCD and the HPA fight over replicas and the app
+  # shows OutOfSync whenever the HPA scales away from the git-declared value.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
   syncPolicy:
     automated:
       prune: true      # remove resources no longer in git
