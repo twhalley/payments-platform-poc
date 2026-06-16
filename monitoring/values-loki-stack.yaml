@@ -17,7 +17,10 @@ loki:
   persistence:
     enabled: false        # ephemeral — fine for PoC; use PVC in production
   config:
-    retention_period: 720h  # 30 days — matches Prometheus retention for PCI-DSS audit trail
+    # retention_period is not a top-level field in loki 2.6.1 (shipped by this
+    # chart) — it lives under limits_config, else loki crashes on config parse.
+    limits_config:
+      retention_period: 720h  # 30 days — matches Prometheus retention for PCI-DSS audit trail
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits:   { cpu: 200m, memory: 256Mi }
