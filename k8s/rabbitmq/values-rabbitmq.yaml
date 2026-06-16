@@ -33,6 +33,13 @@ persistence:
   enabled: true
   size: 1Gi
 
+# The chart auto-creates its own PDB (maxUnavailable: 1) which collides with the
+# standalone minAvailable: 2 PDB in k8s/rabbitmq/pdb.yaml (same name → kubectl
+# apply merges both fields → "minAvailable and maxUnavailable cannot be both set").
+# Disable the chart's PDB; pdb.yaml is the authoritative one.
+pdb:
+  create: false
+
 resources:
   requests: { cpu: 100m, memory: 256Mi }
   limits:   { cpu: 500m, memory: 512Mi }
