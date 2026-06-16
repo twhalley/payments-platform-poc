@@ -13,9 +13,9 @@ import { check, sleep } from "k6";
 
 export const options = {
   stages: [
-    { duration: "30s", target: 20 },   // ramp up — pods should still handle this
-    { duration: "60s", target: 100 },  // sustained spike — HPA triggers around here
-    { duration: "30s", target: 200 },  // peak — expect 4-6 pods after scale-out
+    { duration: "30s", target: 50 },   // ramp up
+    { duration: "60s", target: 200 },  // sustained spike — HPA triggers around here
+    { duration: "30s", target: 500 },  // peak — expect 4-6 pods after scale-out
     { duration: "30s", target: 0 },    // cool down — watch replicas drop after 60s
   ],
   thresholds: {
@@ -33,5 +33,5 @@ export default function () {
     "status 200": (r) => r.status === 200,
     "body contains payments": (r) => r.body.includes("payments"),
   });
-  sleep(0.1);
+  // no sleep — VUs hammer continuously to generate enough CPU to trigger HPA
 }

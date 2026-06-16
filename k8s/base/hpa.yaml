@@ -15,7 +15,7 @@ spec:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 50  # scale when avg CPU > 50% of request (25m)
+          averageUtilization: 30  # scale when avg CPU > 30% of request (25m = 7.5m threshold)
   behavior:
     scaleUp:
       stabilizationWindowSeconds: 15   # quick scale-up for the demo
