@@ -3,7 +3,7 @@
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/twhalley/payments-platform-poc/badge)](https://scorecard.dev/viewer/?uri=github.com/twhalley/payments-platform-poc)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Local-first DevSecOps proof-of-concept for a PCI-DSS payments platform: a GitOps-delivered
+DevSecOps proof-of-concept for a PCI-DSS payments platform, runnable in one click via **GitHub Codespaces**: a GitOps-delivered
 Kubernetes workload with autoscaling, layered security scanning, software-supply-chain
 integrity enforcement, observability, service-mesh mTLS, and infrastructure-as-code
 mirroring a GCP/GKE production target.
@@ -12,7 +12,7 @@ mirroring a GCP/GKE production target.
 
 | Capability | Tool / Pattern |
 |---|---|
-| Container orchestration | Kubernetes (local kind cluster) |
+| Container orchestration | Kubernetes (k3d cluster in Codespaces) |
 | App manifests | Kustomize base + dev/prod overlays |
 | Platform packages | Helm (ArgoCD, Prometheus, RabbitMQ, Kyverno, Istio, Falco) |
 | App as Helm chart | `charts/nginx-app/` — authored from scratch |
@@ -1452,11 +1452,7 @@ Every JD requirement maps to specific files in this repo. Open the file directly
 
 ## Note on scope
 
-Runs on a local **kind** cluster by design — the role explicitly values "keeping local
-development environments working so engineers can run the full stack on their machines"
-and names Tilt. Cloud IaC (`terraform/`) is real and `terraform plan`-validated against
-GKE; demonstrated without live cloud spend. Open in GitHub Codespaces to run with zero
-local setup.
+Runs in **GitHub Codespaces** via k3d — open the repo, click **Code → Codespaces → New with options → 4-core**, and the DevContainer installs every tool and configures the cluster automatically. No local install required. Cloud IaC (`terraform/`) is real and `terraform plan`-validated against GKE; demonstrated without live cloud spend.
 
 ---
 

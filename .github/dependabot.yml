@@ -1,36 +1,40 @@
 version: 2
 updates:
+  # ── GitHub Actions ────────────────────────────────────────────────────────────
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
       day: "monday"
     labels: ["security", "dependencies"]
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      github-actions:
+        patterns: ["*"]   # one PR for all Actions bumps instead of one per action
 
+  # ── Docker base images ────────────────────────────────────────────────────────
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
       day: "monday"
     labels: ["security", "dependencies"]
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      docker:
+        patterns: ["*"]
 
-  - package-ecosystem: "pip"
-    directory: "/k8s/rabbitmq"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    labels: ["security", "dependencies"]
-
+  # ── Terraform providers + modules ─────────────────────────────────────────────
   - package-ecosystem: "terraform"
     directory: "/terraform"
     schedule:
       interval: "weekly"
       day: "monday"
     labels: ["security", "dependencies"]
-
-  - package-ecosystem: "npm"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    labels: ["security", "dependencies"]
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      terraform:
+        patterns: ["*"]
