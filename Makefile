@@ -69,7 +69,7 @@ argocd:
 	@echo "    Watch pods in another terminal: kubectl get pods -n argocd -w"
 	@echo ""
 	helm upgrade --install argocd argo/argo-cd \
-		--namespace argocd \
+		--namespace argocd --create-namespace \
 		--values argocd/values-argocd.yaml \
 		--wait --timeout 10m
 	@echo ""
