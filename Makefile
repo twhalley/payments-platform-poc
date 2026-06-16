@@ -64,37 +64,55 @@ load-test:
 # ── Phase 3: ArgoCD ───────────────────────────────────────────────────────────
 argocd:
 	helm repo add argo https://argoproj.github.io/argo-helm --force-update 2>/dev/null
+	@echo ""
+	@echo "==> Installing ArgoCD (~5 min on first run — pulling ~8 images)"
+	@echo "    Watch pods in another terminal: kubectl get pods -n argocd -w"
+	@echo ""
 	helm upgrade --install argocd argo/argo-cd \
 		--namespace argocd \
 		--values argocd/values-argocd.yaml \
-		--wait
+		--wait --timeout 10m
+	@echo ""
+	@echo "==> Registering GitOps application..."
 	kubectl apply -f argocd/application.yaml
 	@echo ""
-	@echo "ArgoCD ready. Open the UI:"
-	@echo "  kubectl port-forward -n argocd svc/argocd-server 8443:443"
-	@echo "  https://localhost:8443"
+	@echo "✓ ArgoCD ready."
+	@echo "  UI:      kubectl port-forward -n argocd svc/argocd-server 8443:443"
+	@echo "           https://localhost:8443  (admin / see below)"
+	@echo "  Password: kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d"
 
 # ── Phase 5: Prometheus + Grafana ─────────────────────────────────────────────
 prometheus:
 	helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update 2>/dev/null
+	@echo ""
+	@echo "==> Installing Prometheus + Grafana (~4 min — large chart)"
+	@echo "    Watch pods in another terminal: kubectl get pods -n monitoring -w"
+	@echo ""
 	helm upgrade --install kube-prometheus-stack \
 		prometheus-community/kube-prometheus-stack \
 		--namespace monitoring --create-namespace \
 		--values monitoring/values-kube-prometheus-stack.yaml \
 		--set grafana.adminPassword=poc-admin \
-		--wait
+		--wait --timeout 10m
 	@echo ""
-	@echo "Grafana ready. Open the UI:"
-	@echo "  kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
-	@echo "  http://localhost:3000  admin / poc-admin"
+	@echo "✓ Grafana ready."
+	@echo "  UI:  kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
+	@echo "       http://localhost:3000  admin / poc-admin"
+	@echo "  Prometheus: kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090"
 
 # ── Phase 8: RabbitMQ ─────────────────────────────────────────────────────────
 rabbitmq:
 	helm repo add bitnami https://charts.bitnami.com/bitnami --force-update 2>/dev/null
+	@echo ""
+	@echo "==> Installing RabbitMQ 3-node cluster (~3 min)"
+	@echo "    Watch pods in another terminal: kubectl get pods -n $(NAMESPACE) -w"
+	@echo ""
 	helm upgrade --install rabbitmq bitnami/rabbitmq \
 		--namespace $(NAMESPACE) \
 		--values k8s/rabbitmq/values-rabbitmq.yaml \
-		--wait
+		--wait --timeout 10m
+	@echo ""
+	@echo "==> Applying NetworkPolicy, PDB, producer, consumer..."
 	kubectl create secret generic rabbitmq-url \
 		--namespace $(NAMESPACE) \
 		--from-literal=url="amqp://payments:poc-change-me@rabbitmq.$(NAMESPACE).svc:5672/payments" \
@@ -104,42 +122,63 @@ rabbitmq:
 	kubectl apply -f k8s/rabbitmq/consumer-deployment.yaml
 	kubectl apply -f k8s/rabbitmq/producer-job.yaml
 	@echo ""
-	@echo "RabbitMQ ready. Management UI:"
-	@echo "  kubectl port-forward -n $(NAMESPACE) svc/rabbitmq 15672:15672"
-	@echo "  http://localhost:15672  payments / poc-change-me"
+	@echo "✓ RabbitMQ ready."
+	@echo "  Logs: kubectl logs -n $(NAMESPACE) -l app.kubernetes.io/name=payment-consumer -f"
+	@echo "  UI:   kubectl port-forward -n $(NAMESPACE) svc/rabbitmq 15672:15672"
+	@echo "        http://localhost:15672  payments / poc-change-me"
 
 # ── Phase 7: Kyverno ──────────────────────────────────────────────────────────
 kyverno:
 	helm repo add kyverno https://kyverno.github.io/kyverno --force-update 2>/dev/null
+	@echo ""
+	@echo "==> Installing Kyverno admission controller (~2 min)"
+	@echo "    Watch pods in another terminal: kubectl get pods -n kyverno -w"
+	@echo ""
 	helm upgrade --install kyverno kyverno/kyverno \
 		--namespace kyverno --create-namespace \
-		--wait
+		--wait --timeout 10m
+	@echo ""
+	@echo "==> Applying admission policies..."
 	kubectl apply -f kyverno/policies/require-non-root.yaml
 	kubectl apply -f kyverno/policies/require-resource-limits.yaml
 	kubectl apply -f kyverno/policies/block-privileged.yaml
 	@echo ""
-	@echo "Kyverno ready. Test policy enforcement:"
-	@echo "  kubectl run bad-pod --image=nginx --namespace $(NAMESPACE)"
-	@echo "  # Expected: admission webhook denied"
+	@echo "✓ Kyverno ready. Live admission demo:"
+	@echo "  BLOCK:  kubectl run bad-pod --image=nginx -n $(NAMESPACE)"
+	@echo "  ALLOW:  kubectl run good-pod --image=nginxinc/nginx-unprivileged:1.27-alpine --requests=cpu=50m,memory=64Mi --limits=cpu=100m,memory=128Mi -n $(NAMESPACE)"
 
 # ── Phase 7: Istio mTLS ───────────────────────────────────────────────────────
 istio:
 	helm repo add istio https://istio-release.storage.googleapis.com/charts --force-update 2>/dev/null
+	@echo ""
+	@echo "==> Installing Istio base CRDs..."
 	helm upgrade --install istio-base istio/base \
-		--namespace istio-system --create-namespace --wait
+		--namespace istio-system --create-namespace --wait --timeout 5m
+	@echo ""
+	@echo "==> Installing istiod control plane (~5 min)"
+	@echo "    Watch pods in another terminal: kubectl get pods -n istio-system -w"
+	@echo ""
 	helm upgrade --install istiod istio/istiod \
-		--namespace istio-system --wait
+		--namespace istio-system --wait --timeout 10m
+	@echo ""
+	@echo "==> Applying mTLS STRICT + AuthorizationPolicy..."
 	kubectl apply -f istio/peer-authentication.yaml
 	kubectl apply -f istio/authorization-policy.yaml
-	@echo "Istio installed — mTLS STRICT enforced in $(NAMESPACE)"
+	@echo ""
+	@echo "✓ Istio ready — mTLS STRICT enforced in $(NAMESPACE)"
+	@echo "  Verify: kubectl get peerauthentication -n $(NAMESPACE)"
 
 # ── Loki log aggregation ──────────────────────────────────────────────────────
 loki:
 	helm repo add grafana https://grafana.github.io/helm-charts --force-update 2>/dev/null
+	@echo ""
+	@echo "==> Installing Loki + Promtail (~2 min)"
+	@echo "    Watch pods in another terminal: kubectl get pods -n monitoring -w"
+	@echo ""
 	helm upgrade --install loki-stack grafana/loki-stack \
 		--namespace monitoring --create-namespace \
 		--values monitoring/values-loki-stack.yaml \
-		--wait
+		--wait --timeout 10m
 	@echo ""
 	@echo "Loki ready. Add data source in Grafana:"
 	@echo "  URL: http://loki-stack:3100"
