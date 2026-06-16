@@ -71,7 +71,7 @@ argocd:
 	helm upgrade --install argocd argo/argo-cd \
 		--namespace argocd --create-namespace \
 		--values argocd/values-argocd.yaml \
-		--wait --timeout 10m
+		--wait=legacy --timeout 10m
 	@echo ""
 	@echo "==> Registering GitOps application..."
 	kubectl apply -f argocd/application.yaml
@@ -93,7 +93,7 @@ prometheus:
 		--namespace monitoring --create-namespace \
 		--values monitoring/values-kube-prometheus-stack.yaml \
 		--set grafana.adminPassword=poc-admin \
-		--wait --timeout 10m
+		--wait=legacy --timeout 10m
 	@echo ""
 	@echo "✓ Grafana ready."
 	@echo "  UI:  kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
@@ -110,7 +110,7 @@ rabbitmq:
 	helm upgrade --install rabbitmq bitnami/rabbitmq \
 		--namespace $(NAMESPACE) \
 		--values k8s/rabbitmq/values-rabbitmq.yaml \
-		--wait --timeout 10m
+		--wait=legacy --timeout 10m
 	@echo ""
 	@echo "==> Applying NetworkPolicy, PDB, producer, consumer..."
 	kubectl create secret generic rabbitmq-url \
@@ -136,7 +136,7 @@ kyverno:
 	@echo ""
 	helm upgrade --install kyverno kyverno/kyverno \
 		--namespace kyverno --create-namespace \
-		--wait --timeout 10m
+		--wait=legacy --timeout 10m
 	@echo ""
 	@echo "==> Applying admission policies..."
 	kubectl apply -f kyverno/policies/require-non-root.yaml
@@ -153,13 +153,13 @@ istio:
 	@echo ""
 	@echo "==> Installing Istio base CRDs..."
 	helm upgrade --install istio-base istio/base \
-		--namespace istio-system --create-namespace --wait --timeout 5m
+		--namespace istio-system --create-namespace --wait=legacy --timeout 5m
 	@echo ""
 	@echo "==> Installing istiod control plane (~5 min)"
 	@echo "    Watch pods in another terminal: kubectl get pods -n istio-system -w"
 	@echo ""
 	helm upgrade --install istiod istio/istiod \
-		--namespace istio-system --wait --timeout 10m
+		--namespace istio-system --wait=legacy --timeout 10m
 	@echo ""
 	@echo "==> Applying mTLS STRICT + AuthorizationPolicy..."
 	kubectl apply -f istio/peer-authentication.yaml
@@ -178,7 +178,7 @@ loki:
 	helm upgrade --install loki-stack grafana/loki-stack \
 		--namespace monitoring --create-namespace \
 		--values monitoring/values-loki-stack.yaml \
-		--wait --timeout 10m
+		--wait=legacy --timeout 10m
 	@echo ""
 	@echo "Loki ready. Add data source in Grafana:"
 	@echo "  URL: http://loki-stack:3100"
@@ -210,7 +210,7 @@ falco:
 			--set driver.kind=modern_ebpf \
 			--set falco.grpc.enabled=true \
 			--set falco.grpcOutput.enabled=true \
-			--wait; \
+			--wait=legacy; \
 		echo ""; \
 		echo "Falco ready. Watch runtime alerts:"; \
 		echo "  kubectl logs -n falco -l app.kubernetes.io/name=falco -f"; \
@@ -293,7 +293,7 @@ secrets:
 	helm upgrade --install external-secrets external-secrets/external-secrets \
 		--namespace external-secrets --create-namespace \
 		--set installCRDs=true \
-		--wait
+		--wait=legacy
 
 	@echo ""
 	@echo "── Installing OpenBao (open-source Vault fork)..."
@@ -301,7 +301,7 @@ secrets:
 	helm upgrade --install openbao openbao/openbao \
 		--namespace openbao --create-namespace \
 		--values k8s/secrets/openbao-values.yaml \
-		--wait
+		--wait=legacy
 
 	@echo ""
 	@echo "── Storing OpenBao root token in ESO's namespace..."
