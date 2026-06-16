@@ -1,22 +1,31 @@
 # Helm values for the ArgoCD install.
-# Install: helm upgrade --install argocd argo/argo-cd -n argocd -f argocd/values-argocd.yaml
+# Stripped to the minimum needed for the GitOps demo — dex (SSO),
+# notifications, and applicationset controller are all disabled to reduce
+# image pulls and memory footprint on the 4-core Codespace.
+
 global:
   logging:
     level: info
 
 server:
-  # Disable TLS on the server — handled by ingress/Istio in this PoC
   extraArgs:
-    - --insecure
+    - --insecure   # TLS handled by Istio/ingress in this PoC
   service:
     type: ClusterIP
+
+# Disable components not needed for the demo
+dex:
+  enabled: false   # SSO — not used
+
+notifications:
+  enabled: false   # notification controller — not used
+
+applicationSet:
+  enabled: false   # ApplicationSet controller — not used
 
 configs:
   params:
     server.insecure: true
-  cm:
-    # only pull from signed commits (pairs with Phase 10 supply chain work)
-    resource.customizations: ""
   rbac:
     policy.default: role:readonly
     policy.csv: |
