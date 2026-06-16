@@ -49,7 +49,7 @@ destroy:
 
 # ── HPA demo ──────────────────────────────────────────────────────────────────
 watch:
-	kubectl get hpa,pods -n $(NAMESPACE) -w
+	watch -n 2 "kubectl get hpa,pods -n $(NAMESPACE)"
 
 load-test:
 	@echo "Port-forwarding nginx to localhost:8080..."
