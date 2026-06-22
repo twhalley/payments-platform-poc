@@ -26,7 +26,7 @@ networking:
   disableDefaultCNI: true
 nodes:
   - role: control-plane
-    image: kindest/node:v1.32.3
+    image: kindest/node:v1.36.1
     kubeadmConfigPatches:
       - |
         kind: InitConfiguration
@@ -34,4 +34,4 @@ nodes:
           kubeletExtraArgs:
             node-labels: "ingress-ready=true"
   - role: worker
-    image: kindest/node:v1.32.3
+    image: kindest/node:v1.36.1
