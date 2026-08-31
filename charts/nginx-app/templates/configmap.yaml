@@ -7,3 +7,5 @@ metadata:
 data:
   index.html: |
     {{- .Values.content | nindent 4 }}
+  default.conf: |
+    {{- .Values.nginxConf | nindent 4 }}

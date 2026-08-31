@@ -71,6 +71,9 @@ spec:
             - name: content
               mountPath: /usr/share/nginx/html
               readOnly: true
+            - name: nginx-config   # security response headers (see configmap.yaml)
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
             - name: cache          # read-only rootfs needs writable paths via emptyDir
               mountPath: /var/cache/nginx
             - name: run
@@ -81,6 +84,15 @@ spec:
         - name: content
           configMap:
             name: nginx-app-content
+            items:
+              - key: index.html
+                path: index.html
+        - name: nginx-config
+          configMap:
+            name: nginx-app-content
+            items:
+              - key: default.conf
+                path: default.conf
         - name: cache
           emptyDir: {}
         - name: run

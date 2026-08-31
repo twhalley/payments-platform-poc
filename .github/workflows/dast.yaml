@@ -30,12 +30,26 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      # Render the same nginx config the workload actually ships with, straight
+      # out of the Kustomize ConfigMap. Without this the scan target is a stock
+      # upstream container and the baseline reports missing security headers
+      # that are in fact set in k8s/base/ and charts/nginx-app/.
+      - name: Render nginx config from the Kustomize ConfigMap
+        run: |
+          mkdir -p dast/conf
+          yq '.data."default.conf"' k8s/base/configmap.yaml > dast/conf/default.conf
+          # Fail loudly rather than silently scanning a stock default config.
+          test -s dast/conf/default.conf
+          grep -q 'Content-Security-Policy' dast/conf/default.conf
+          echo "Rendered scan config:" && cat dast/conf/default.conf
+
       - name: Start nginx (scan target)
         run: |
           docker run -d \
             --name nginx-target \
             -p 8080:8080 \
-            nginxinc/nginx-unprivileged:1.27-alpine
+            -v "$GITHUB_WORKSPACE/dast/conf:/etc/nginx/conf.d:ro" \
+            nginxinc/nginx-unprivileged:1.31-alpine
           for i in $(seq 1 15); do
             curl -sf http://localhost:8080 > /dev/null && echo "nginx ready" && break
             echo "Waiting... ($i)" && sleep 2

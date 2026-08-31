@@ -4,9 +4,17 @@
 #
 # IGNORE rules that are false positives or not applicable to a static demo target.
 # FAIL rules that must block deployment in production (change fail_action to true).
+#
+# The scan target now runs the same nginx config the workload ships with (rendered
+# from k8s/base/configmap.yaml — see .github/workflows/dast.yaml), so header rules
+# are enforced against real config rather than a stock upstream container.
+#
+# Removed as redundant once the headers were set at the nginx layer:
+#   10020  Missing anti-clickjacking header  — X-Frame-Options + CSP frame-ancestors
+#   10021  X-Content-Type-Options missing    — now set to nosniff
+#   10038  Content Security Policy not set   — now set
+#   10036  Server leaks version information  — server_tokens off
+#   90004  Insufficient site isolation       — COEP/COOP/CORP now set
 
 10035	IGNORE	Strict-Transport-Security header missing (nginx in PoC has no TLS — handled by Istio in cluster)
-10036	IGNORE	Server leaks version information (acceptable for PoC; suppress in prod via server_tokens off)
-10021	WARN	X-Content-Type-Options header missing
-10038	WARN	Content Security Policy header not set
 10096	WARN	Timestamp disclosure
