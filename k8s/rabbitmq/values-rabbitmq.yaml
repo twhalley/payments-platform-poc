@@ -8,6 +8,18 @@
 # and its own PVC. This matters because RabbitMQ nodes identify each other by hostname
 # in their cluster formation protocol; restarting a pod must retain its name and data.
 
+# Bitnami removed versioned tags from docker.io/bitnami/* (Aug 2025 migration to
+# "Bitnami Secure Images"); the chart's default image now 404s. Pull the archived
+# image from docker.io/bitnamilegacy/* instead. allowInsecureImages lets the chart
+# accept the non-bitnami registry override.
+global:
+  security:
+    allowInsecureImages: true
+image:
+  registry: docker.io
+  repository: bitnamilegacy/rabbitmq
+  tag: 4.1.3-debian-12-r1
+
 replicaCount: 3    # quorum for HA — losing 1 node still has a majority
 
 auth:
@@ -20,6 +32,13 @@ auth:
 persistence:
   enabled: true
   size: 1Gi
+
+# The chart auto-creates its own PDB (maxUnavailable: 1) which collides with the
+# standalone minAvailable: 2 PDB in k8s/rabbitmq/pdb.yaml (same name → kubectl
+# apply merges both fields → "minAvailable and maxUnavailable cannot be both set").
+# Disable the chart's PDB; pdb.yaml is the authoritative one.
+pdb:
+  create: false
 
 resources:
   requests: { cpu: 100m, memory: 256Mi }

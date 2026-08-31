@@ -1,0 +1,10 @@
+# gitleaks configuration — extends the built-in default ruleset.
+# See https://github.com/gitleaks/gitleaks#configuration
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Ignore the detect-secrets baseline — it stores SHA1 hashes of known/accepted findings, not real secrets, so gitleaks should not re-flag it."
+paths = [
+  '''\.secrets\.baseline$''',
+]
