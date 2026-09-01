@@ -392,15 +392,11 @@ A full audit was run against this project. Summary of findings and resolutions:
 
 ---
 
-## Makefile — what it is and how to use it
+## Makefile — how to use it
 
-A **Makefile** is a build automation tool that groups complex multi-step commands into
-short named targets. Instead of remembering 10-flag Helm install commands and the order
-to run them in, you run `make rabbitmq` and the Makefile handles the details.
-
-For this PoC the Makefile is the primary demo interface. Every step in the walkthrough
-below maps to a single `make` target — run them in order for a full end-to-end demo,
-or pick individual targets to demonstrate specific capabilities.
+The Makefile is the demo interface: every step in the walkthrough below maps to a single
+`make` target — run them in order for a full end-to-end demo, or pick individual targets
+to demonstrate specific capabilities.
 
 ```bash
 make help    # list all targets with one-line descriptions
