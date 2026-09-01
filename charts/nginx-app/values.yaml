@@ -83,6 +83,7 @@ nginxConf: |
       add_header Cross-Origin-Opener-Policy "same-origin" always;
       add_header Cross-Origin-Resource-Policy "same-origin" always;
       add_header Referrer-Policy "no-referrer" always;
+      add_header Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()" always;
 
       location / {
           root   /usr/share/nginx/html;
