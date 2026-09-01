@@ -40,3 +40,9 @@ variable "kms_keyring" {
   type        = string
   default     = "payments-poc-keyring"
 }
+
+variable "environment" {
+  description = "Deployment environment, applied as a label on managed resources."
+  type        = string
+  default     = "dev"
+}

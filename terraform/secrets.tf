@@ -47,7 +47,7 @@ resource "google_secret_manager_secret" "payments" {
         location = var.region
         customer_managed_encryption {
           # Re-uses the KMS key from terraform/main.tf (90-day rotation, PCI-DSS Req 3.6)
-          kms_key_name = google_kms_crypto_key.payments_key.id
+          kms_key_name = google_kms_crypto_key.secrets.id
         }
       }
     }
