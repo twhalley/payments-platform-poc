@@ -456,8 +456,8 @@ kubectl get pods -n payments-helm
 
 Two nodes (control-plane + worker). nginx is running in two namespaces, deployed two ways.
 
-> *"Local kind cluster, two nodes — directly mirrors a GKE setup. The role values local dev
-> environments; this is the full stack on one machine with no cloud spend."*
+> *"Local kind cluster, two nodes — directly mirrors a GKE setup. This is the full stack on
+> one machine with no cloud spend."*
 
 ---
 
@@ -776,7 +776,7 @@ kubectl run unsigned --image=alpine --namespace payments-dev
 > or did someone tamper with it between build and deploy? Keyless signing uses the pipeline's
 > verified GitHub identity — no keys to rotate or leak. The Kyverno gate runs inside the
 > cluster and can't be bypassed by pushing directly to the registry. This is the open-source
-> equivalent of GCP Binary Authorization — the 'set you apart' bullet in the JD."*
+> equivalent of GCP Binary Authorization."*
 
 ---
 
@@ -1414,11 +1414,11 @@ kubectl get externalsecret -n payments-dev
 
 ---
 
-## JD mapping
+## Control coverage
 
-Every JD requirement maps to specific files in this repo. Open the file directly to show evidence.
+Every control area maps to specific files in this repo. Open the file directly to show evidence.
 
-| JD requirement | Demo step | Key files |
+| Control area | Demo step | Key files |
 |---|---|---|
 | Production Kubernetes (GKE) | Steps 1–2, 11 | `kind-config.yaml`, `terraform/gke.tf` (private cluster, Workload Identity, Shielded Nodes), `terraform/variables.tf` |
 | Terraform for GCP | Step 11 | `terraform/main.tf` (provider), `terraform/gke.tf` (cluster), `terraform/vpc.tf` (VPC + Cloud Armor), `terraform/kms.tf` (KMS rotation), `terraform/outputs.tf` |
